@@ -47,11 +47,13 @@ jobs:
         shell: pwsh
         run: |
           function Note($title, $text) { $t = ($text | Out-String) -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'; Write-Host "::warning title=$title::$t" }
+          New-Item -ItemType Directory C:\KKTest -Force | Out-Null
           $setup = Get-ChildItem dist-installer\*.exe | Select-Object -First 1
           Note '安裝檔' "$($setup.Name) $([math]::Round($setup.Length/1MB,1)) MB"
           $dir = 'C:\KKTest\XiaokeRecorder'
           $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=`"$dir`" /LOG=`"C:\KKTest\install.log`"" -Wait -PassThru
-          if (-not (Test-Path "$dir\XiaokeRecorder.exe")) { throw '找不到安裝後的執行檔' }
+          Note '安裝結果' "結束代碼 $($p.ExitCode)"
+          if (-not (Test-Path "$dir\XiaokeRecorder.exe")) { if (Test-Path C:\KKTest\install.log) { Note '安裝紀錄' (Get-Content C:\KKTest\install.log -Tail 30) }; throw '找不到安裝後的執行檔' }
       - name: 安裝後自我測試
         shell: pwsh
         run: |
