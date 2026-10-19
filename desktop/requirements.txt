@@ -9,3 +9,4 @@ soundcard>=0.4.3
 imageio-ffmpeg>=0.5.1
 screeninfo>=0.8.1
 numpy>=1.26
+pystray>=0.19.5 ; sys_platform != "darwin"

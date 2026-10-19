@@ -22,20 +22,25 @@ export const DEFAULT_SHORTCUTS = {
   goEnd: 'End',
   timelineIn: '=',
   timelineOut: '-',
-  recordStart: 'Mod+Shift+R',
-  recordPause: 'Mod+Shift+P',
-  micToggle: 'Mod+Shift+M',
+  // 錄影用：桌面版是「全域熱鍵」，在其他程式裡也能用（主視窗縮小時照樣有效）
+  recordStart: 'Mod+Alt+R',
+  recordPause: 'Mod+Alt+P',
+  recordStop: 'Mod+Alt+S',
+  micToggle: 'Mod+Alt+M',
 };
+export const RECORD_ACTIONS = ['recordStart', 'recordPause', 'recordStop', 'micToggle'];
 
 const KEY = 'xkr.shortcuts';
 let map = { ...DEFAULT_SHORTCUTS };
+const listeners = new Set();
 try { Object.assign(map, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch { }
 
 export const Shortcuts = {
   get map() { return map; },
   set(action, combo) { map[action] = combo; this.save(); },
   reset() { map = { ...DEFAULT_SHORTCUTS }; this.save(); },
-  save() { try { localStorage.setItem(KEY, JSON.stringify(map)); } catch { } },
+  save() { try { localStorage.setItem(KEY, JSON.stringify(map)); } catch { } listeners.forEach(f => f(map)); },
+  onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   label(combo) {
     if (!combo) return '—';
     const mac = isApple();
@@ -48,6 +53,9 @@ export const Shortcuts = {
     if (e.shiftKey) parts.push('Shift');
     if (e.altKey) parts.push('Alt');
     let k = e.key;
+    // 字母、數字用實體按鍵（Mac 按 Option 時 e.key 會變成特殊符號）
+    if (/^Key[A-Z]$/.test(e.code)) k = e.code.slice(3);
+    else if (/^Digit\d$/.test(e.code)) k = e.code.slice(5);
     if (k === ' ') k = 'Space';
     else if (k === 'Backspace') k = 'Delete';
     else if (k.length === 1) k = k.toUpperCase();

@@ -160,6 +160,324 @@ class SaveSession:
         return self.path
 
 
+class RecControl:
+    """錄影中的控制：主視窗縮小，右下角出現迷你控制列（計時、暫停、停止、麥克風），系統列也有小圖示。
+    計時由 Python 自己累積（暫停不計），不受主視窗在背景時網頁計時器變慢的影響。
+    按鈕動作送回主視窗的網頁（window.__xkrCommand），由網頁真正去暫停／停止錄影。"""
+
+    W, H = 380, 64
+
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self.mini = None
+        self.tray = None
+        self.state = "idle"        # idle / countdown / recording / paused / stopping
+        self.base = 0.0            # 已累積的錄影秒數
+        self.since = None          # 開始計時的 perf_counter（暫停時為 None）
+        self.countdown_end = 0.0
+        self.mic = None            # None＝沒有麥克風；True／False＝開／關
+        self.lock = threading.Lock()
+
+    # ---- 狀態 ----
+    def elapsed(self):
+        return self.base + (time.perf_counter() - self.since if self.since is not None else 0.0)
+
+    def snapshot(self):
+        with self.lock:
+            cd = max(0.0, self.countdown_end - time.perf_counter()) if self.state == "countdown" else 0
+            return {"state": self.state, "elapsed": round(self.elapsed(), 2), "countdown": round(cd, 2), "mic": self.mic}
+
+    def update(self, info):
+        """網頁通知狀態改變：{state, elapsed, mic}"""
+        with self.lock:
+            st = info.get("state", self.state)
+            if "elapsed" in info and info["elapsed"] is not None:
+                self.base = float(info["elapsed"])
+            self.since = time.perf_counter() if st == "recording" else None
+            self.state = st
+            if "mic" in info:
+                self.mic = info["mic"]
+        self._refresh_tray()
+        return self.snapshot()
+
+    # ---- 開始／結束 ----
+    def begin(self, opts):
+        with self.lock:
+            self.state = "countdown" if opts.get("countdown") else "recording"
+            self.countdown_end = time.perf_counter() + float(opts.get("countdown") or 0)
+            self.base, self.since = 0.0, None
+            self.mic = opts.get("mic")
+        try:
+            self.bridge._window.minimize()
+        except Exception:
+            pass
+        try:
+            self._open_mini()
+        except Exception:
+            self.mini_error = traceback.format_exc()[-800:]
+        self._open_tray()
+        return {"status": "ok"}
+
+    def end(self):
+        with self.lock:
+            self.state = "idle"
+            self.since = None
+        for w in (self.mini,):
+            try:
+                w and w.destroy()
+            except Exception:
+                pass
+        self.mini = None
+        try:
+            self.tray and self.tray.stop()
+        except Exception:
+            pass
+        self.tray = None
+        try:
+            self.bridge._window.restore()
+            self.bridge._window.show()
+        except Exception:
+            pass
+        return {"status": "ok"}
+
+    def command(self, cmd):
+        """迷你控制列或系統列按下：pause / stop / mic / discard / show"""
+        cmd = str(cmd)
+        if cmd == "show":
+            try:
+                self.bridge._window.restore()
+                self.bridge._window.show()
+            except Exception:
+                pass
+            return {"status": "ok"}
+        if cmd not in ("pause", "stop", "mic", "discard"):
+            return {"status": "error"}
+        try:
+            self.bridge._window.evaluate_js(f"window.__xkrCommand && window.__xkrCommand('{cmd}')")
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        return {"status": "ok"}
+
+    # ---- 迷你控制列（右下角、永遠在最上層、Windows 上不會被錄進影片）----
+    def _work_area(self):
+        if IS_WIN:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                r = wintypes.RECT()
+                ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)  # SPI_GETWORKAREA（實際像素）
+                scale = ctypes.windll.user32.GetDpiForSystem() / 96.0
+                return r.left / scale, r.top / scale, (r.right - r.left) / scale, (r.bottom - r.top) / scale
+            except Exception:
+                pass
+        try:
+            import screeninfo
+            m = next((m for m in screeninfo.get_monitors() if m.is_primary), screeninfo.get_monitors()[0])
+            return m.x, m.y, m.width, m.height - (40 if IS_LINUX else 70)
+        except Exception:
+            return 0, 0, 1366, 728
+
+    def _open_mini(self):
+        import webview
+        x, y, w, h = self._work_area()
+        px, py = int(x + w - self.W - 16), int(y + h - self.H - 16)
+        self.mini = webview.create_window("小柯錄影中", url=self.bridge._server.url + "mini.html", js_api=self.bridge,
+                                          width=self.W, height=self.H, x=px, y=py, resizable=False, frameless=True,
+                                          easy_drag=True, on_top=True, background_color="#171a21", focus=False)
+        if IS_WIN:
+            threading.Thread(target=self._place_win, daemon=True).start()
+
+    def _place_win(self):
+        """Windows：等迷你控制列真的出現後，貼齊工作列上方的右下角，並設定成不會被錄進影片。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            u32 = ctypes.windll.user32
+            u32.FindWindowW.restype = wintypes.HWND
+            u32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+            u32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+            u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            u32.IsWindowVisible.argtypes = [wintypes.HWND]
+            hwnd = 0
+            for _ in range(60):
+                hwnd = ctypes.windll.user32.FindWindowW(None, "小柯錄影中")
+                if hwnd and ctypes.windll.user32.IsWindowVisible(hwnd):
+                    break
+                time.sleep(0.1)
+            if not hwnd:
+                return
+            time.sleep(0.2)
+            # 依實際像素大小，貼齊工作列上方的右下角
+            wa, rc = wintypes.RECT(), wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(wa), 0)
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rc))
+            w, h = rc.right - rc.left, rc.bottom - rc.top
+            u32.SetWindowPos(hwnd, wintypes.HWND(-1), wa.right - w - 12, wa.bottom - h - 12, 0, 0, 0x0001 | 0x0010)  # HWND_TOPMOST, SWP_NOSIZE|SWP_NOACTIVATE
+            if not os.environ.get("XKR_SHOW_MINI_IN_CAPTURE"):
+                ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE：不會被錄進影片（Windows 10 2004 以上）
+        except Exception:
+            pass
+
+    # ---- 系統列小圖示 ----
+    def _open_tray(self):
+        if IS_MAC:
+            return  # Mac 的選單列圖示必須在主執行緒建立；用迷你控制列即可
+        try:
+            import pystray
+            from PIL import Image
+            img = Image.open(AppInfo.web_dir() / "icons" / "icon-192.png")
+            label = lambda item: self._tray_title()
+            menu = pystray.Menu(
+                pystray.MenuItem(label, None, enabled=False),
+                pystray.MenuItem(lambda item: "繼續錄影" if self.state == "paused" else "暫停", lambda: self.command("pause")),
+                pystray.MenuItem("停止並剪輯", lambda: self.command("stop"), default=True),
+                pystray.MenuItem(lambda item: "關閉麥克風" if self.mic else "開啟麥克風", lambda: self.command("mic"), visible=lambda item: self.mic is not None),
+                pystray.MenuItem("顯示主視窗", lambda: self.command("show")),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("放棄這段錄影", lambda: self.command("discard")),
+            )
+            self.tray = pystray.Icon("xiaoke-recorder", img, "小柯機器人螢幕錄製工具", menu)
+            self.tray.run_detached()
+            threading.Thread(target=self._tray_ticker, daemon=True).start()
+        except Exception:
+            self.tray = None
+
+    def _tray_title(self):
+        s = int(self.elapsed())
+        icon = {"recording": "● 錄影中", "paused": "Ⅱ 已暫停", "countdown": "倒數中"}.get(self.state, "")
+        return f"{icon}  {s // 60:02d}:{s % 60:02d}"
+
+    def _tray_ticker(self):
+        while self.tray is not None:
+            self._refresh_tray()
+            time.sleep(1)
+
+    def _refresh_tray(self):
+        t = self.tray
+        if t is None:
+            return
+        try:
+            t.title = "小柯機器人螢幕錄製工具 — " + self._tray_title()
+            t.update_menu()
+        except Exception:
+            pass
+
+
+class Hotkeys:
+    """全域熱鍵（pynput）：在其他程式裡、主視窗縮小時也能開始／暫停／停止錄影。
+    網頁傳來 {"recordStart": "Mod+Alt+R", ...}，換成 pynput 格式 "<ctrl>+<alt>+r"。
+    Mac 需要在「系統設定 → 隱私權與安全性 → 輔助使用／輸入監控」允許。"""
+
+    SPECIAL = {"Space": "space", "Delete": "delete", "Home": "home", "End": "end", "Enter": "enter", "Escape": "esc", "Tab": "tab",
+               "ArrowLeft": "left", "ArrowRight": "right", "ArrowUp": "up", "ArrowDown": "down", "PageUp": "page_up", "PageDown": "page_down",
+               "Insert": "insert", "Pause": "pause", "PrintScreen": "print_screen"}
+
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self.listener = None
+        self.mapping = {}
+
+    @classmethod
+    def to_pynput(cls, combo):
+        parts = []
+        for k in str(combo).split("+"):
+            if k == "Mod":
+                parts.append("<cmd>" if IS_MAC else "<ctrl>")
+            elif k in ("Shift", "Alt"):
+                parts.append(f"<{k.lower()}>")
+            elif k in cls.SPECIAL:
+                parts.append(f"<{cls.SPECIAL[k]}>")
+            elif len(k) > 1 and k[0] == "F" and k[1:].isdigit():
+                parts.append(f"<{k.lower()}>")
+            elif len(k) == 1:
+                parts.append(k.lower())
+            else:
+                return None
+        # 至少要有一個修飾鍵，避免單一按鍵在別的程式打字時誤觸
+        if not any(p in ("<ctrl>", "<cmd>", "<alt>", "<shift>") for p in parts[:-1]) and not parts[-1].startswith("<f"):
+            return None
+        return "+".join(parts)
+
+    # Mac 的實體按鍵代碼（按住 Option 時字元會變成特殊符號，所以用按鍵代碼判斷）
+    MAC_VK = {0: "a", 11: "b", 8: "c", 2: "d", 14: "e", 3: "f", 5: "g", 4: "h", 34: "i", 38: "j", 40: "k", 37: "l", 46: "m", 45: "n", 31: "o",
+              35: "p", 12: "q", 15: "r", 1: "s", 17: "t", 32: "u", 9: "v", 13: "w", 7: "x", 16: "y", 6: "z",
+              29: "0", 18: "1", 19: "2", 20: "3", 21: "4", 23: "5", 22: "6", 26: "7", 28: "8", 25: "9"}
+
+    @classmethod
+    def norm(cls, key):
+        """把 pynput 的按鍵換成統一名稱：ctrl / alt / shift / cmd / f9 / left / r / 5 …"""
+        from pynput import keyboard
+        if isinstance(key, keyboard.Key):
+            n = key.name
+            for m in ("ctrl", "alt", "shift", "cmd"):
+                if n == m or n.startswith(m + "_"):
+                    return m
+            return n
+        vk = getattr(key, "vk", None)
+        if IS_WIN and vk is not None:
+            if 65 <= vk <= 90 or 48 <= vk <= 57:
+                return chr(vk).lower()
+        if IS_MAC and vk in cls.MAC_VK:
+            return cls.MAC_VK[vk]
+        ch = getattr(key, "char", None)
+        if ch:
+            if len(ch) == 1 and ord(ch) < 32:          # Ctrl＋字母會變成控制字元
+                return chr(ord(ch) + 96)
+            return ch.lower()
+        return f"vk{vk}"
+
+    def set(self, mapping):
+        self.stop()
+        combos = {}
+        for action, combo in (mapping or {}).items():
+            pk = self.to_pynput(combo)
+            if pk:
+                keys = frozenset(p.strip("<>") for p in pk.split("+"))
+                combos.setdefault(keys, str(action))
+        self.mapping = combos
+        if not combos:
+            return {"status": "ok", "count": 0}
+        try:
+            from pynput import keyboard
+            pressed = set()
+
+            def on_press(key):
+                k = self.norm(key)
+                if k in pressed:
+                    return  # 長按時的重複按鍵不再觸發
+                pressed.add(k)
+                act = combos.get(frozenset(pressed))
+                if act:
+                    self.fire(act)
+
+            def on_release(key):
+                pressed.discard(self.norm(key))
+
+            self.listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+            self.listener.daemon = True
+            self.listener.start()
+            return {"status": "ok", "count": len(combos)}
+        except Exception as e:
+            self.listener = None
+            return {"status": "error", "message": str(e)}
+
+    def fire(self, action):
+        # 熱鍵在 pynput 的執行緒觸發：交給網頁處理（開始錄影、暫停、停止、麥克風）
+        def run():
+            try:
+                self.bridge._window.evaluate_js(f"window.__xkrHotkey && window.__xkrHotkey('{action}')")
+            except Exception:
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def stop(self):
+        try:
+            self.listener and self.listener.stop()
+        except Exception:
+            pass
+        self.listener = None
+
+
 class DesktopBridge:
     """網頁端透過 window.pywebview.api 呼叫。"""
 
@@ -169,11 +487,32 @@ class DesktopBridge:
         self._sessions = {}
         self._updater = Updater()
         self._native = None
+        self._rec = RecControl(self)
+        self._hotkeys = Hotkeys(self)
         self.forced_save_dir = None
 
     def attach(self, window):
         self._window = window
         self._updater.window = window
+
+    # ---- 錄影中的迷你控制列／系統列 ----
+    def rec_begin(self, opts):
+        return self._rec.begin(opts or {})
+
+    def rec_update(self, info):
+        return self._rec.update(info or {})
+
+    def rec_state(self):
+        return self._rec.snapshot()
+
+    def rec_command(self, cmd):
+        return self._rec.command(cmd)
+
+    def rec_end(self):
+        return self._rec.end()
+
+    def set_hotkeys(self, mapping):
+        return self._hotkeys.set(mapping or {})
 
     # ---- 基本 ----
     def app_info(self):
@@ -391,9 +730,10 @@ class SelfTest:
         const W = 640, H = 360, fps = 30, dur = 4;
         const c = new OffscreenCanvas(W, H), x = c.getContext('2d');
         const out = new mb.Output({ format: new mb.Mp4OutputFormat({ fastStart: 'in-memory' }), target: new mb.BufferTarget() });
-        const codec = await mb.getFirstEncodableVideoCodec(['avc', 'vp9', 'av1'], { width: W, height: H });
+        const { pickVideoCodec, pickAudioCodec } = await import(location.origin + '/js/recorder.js');
+        const codec = await pickVideoCodec(['avc', 'vp9', 'av1'], W, H);
         const vs = new mb.CanvasSource(c, { codec, bitrate: 2e6 }); out.addVideoTrack(vs, { frameRate: fps });
-        const acodec = await mb.getFirstEncodableAudioCodec(['aac', 'opus']);
+        const acodec = await pickAudioCodec(['aac', 'opus']);
         const as = new mb.AudioBufferSource({ codec: acodec, bitrate: 128e3 }); out.addAudioTrack(as);
         await out.start();
         const sr = 48000, ab = new AudioBuffer({ length: sr * dur, numberOfChannels: 1, sampleRate: sr }); const d = ab.getChannelData(0);
@@ -452,10 +792,13 @@ class SelfTest:
             report["mp4_file_ok"] = mp4.is_file() and mp4.stat().st_size > 1000
             report["mp3_file_ok"] = mp3.is_file() and mp3.stat().st_size > 1000
             report["version_match"] = self.window.evaluate_js("document.title !== '' ") is not False
+            # 完整錄影流程：熱鍵開始 → 主視窗縮小＋迷你控制列 → 計時累積 → 熱鍵暫停／繼續 → 熱鍵停止 → 進入剪輯
+            report["flow"] = self.flow_test()
+            self.screenshot("selftest-after-flow.png")
             # 原生錄影 2 秒（雲端電腦可能沒有可錄的畫面：只記錄結果，不算失敗）
             report["native"] = self.native_test()
             report["update_check"] = self.bridge.check_update()
-            report["ok"] = bool(report["web"].get("ok") and report["mp4_file_ok"] and report["mp3_file_ok"])
+            report["ok"] = bool(report["web"].get("ok") and report["mp4_file_ok"] and report["mp3_file_ok"] and (report["flow"].get("ok") or not IS_WIN))
         except Exception:
             report["error"] = traceback.format_exc()
         finally:
@@ -464,6 +807,65 @@ class SelfTest:
                 self.window.destroy()
             except Exception:
                 os._exit(0 if report["ok"] else 1)
+
+    def flow_test(self):
+        w, br = self.window, self.bridge
+        out = {"ok": False, "steps": []}
+        log = lambda name, ok, info="": out["steps"].append({"name": name, "ok": bool(ok), "info": str(info)})
+        try:
+            from pynput import keyboard
+            kb = keyboard.Controller()
+
+            def hotkey(ch):
+                mod = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl_l
+                with kb.pressed(mod):
+                    with kb.pressed(keyboard.Key.alt_l):
+                        kb.press(ch)
+                        kb.release(ch)
+
+            w.evaluate_js("import(location.origin + '/js/app.js').then(m => Object.assign(m.prefs, { mic: false, cam: false, sys: false, native: true, countdown: 2, fps: 15, nativeTarget: 'monitor:0' }))")
+            time.sleep(1)
+            log("全域熱鍵已註冊", br._hotkeys.listener is not None, len(br._hotkeys.mapping))
+            hotkey("r")                                   # Ctrl+Alt+R 開始錄影
+            for _ in range(20):
+                time.sleep(0.25)
+                if br._rec.state == "countdown":
+                    break
+            log("熱鍵開始→倒數", br._rec.state in ("countdown", "recording"), br._rec.state)
+            log("迷你控制列出現", br._rec.mini is not None, getattr(br._rec, "mini_error", ""))
+            if not IS_MAC:
+                log("系統列圖示出現", br._rec.tray is not None)
+            for _ in range(40):                           # 等倒數結束、原生錄影真正開始
+                time.sleep(0.25)
+                if br._rec.state == "recording":
+                    break
+            time.sleep(1.5)
+            st = br.rec_state()
+            log("錄影中計時累積", st["state"] == "recording" and st["elapsed"] > 0.8, st)
+            self.screenshot("selftest-recording.png")
+            hotkey("p")                                   # Ctrl+Alt+P 暫停
+            time.sleep(1.2)
+            e1 = br.rec_state()
+            time.sleep(1.2)
+            e2 = br.rec_state()
+            log("熱鍵暫停→計時停止", e1["state"] == "paused" and abs(e2["elapsed"] - e1["elapsed"]) < 0.05, (e1, e2))
+            br.rec_command("pause")                       # 迷你控制列／系統列的「繼續」按鈕
+            time.sleep(1.5)
+            e3 = br.rec_state()
+            log("迷你控制列按鈕繼續→計時接續累積", e3["state"] == "recording" and e3["elapsed"] > e2["elapsed"] + 0.5, e3)
+            hotkey("s")                                   # Ctrl+Alt+S 停止
+            opened = False
+            for _ in range(80):
+                time.sleep(0.5)
+                if w.evaluate_js("!!document.querySelector('#editor canvas') && !document.querySelector('dialog[open]')"):
+                    opened = True
+                    break
+            log("熱鍵停止→進入剪輯", opened)
+            log("迷你控制列關閉", br._rec.mini is None and br._rec.state == "idle", br._rec.state)
+            out["ok"] = all(s["ok"] for s in out["steps"])
+        except Exception as e:
+            log("例外", False, traceback.format_exc()[-600:])
+        return out
 
     def native_test(self):
         try:
@@ -485,6 +887,53 @@ class SelfTest:
             ImageGrab.grab().save(self.out_dir / name)
         except Exception as e:
             (self.out_dir / (name + ".txt")).write_text(str(e), encoding="utf-8")
+
+
+class WebPermissions:
+    """Windows（WebView2）：App 自己的本機網頁要用麥克風、攝影機、螢幕時直接允許，不再每次跳出詢問視窗
+    （詢問視窗會擋住錄影流程，熱鍵開始錄影時主視窗又可能已縮小，使用者看不到）。只允許本機 127.0.0.1 的網址。"""
+
+    @staticmethod
+    def install(window, origin: str):
+        if not IS_WIN:
+            return
+        try:
+            from System import Action, Func, Boolean
+            from Microsoft.Web.WebView2.Core import CoreWebView2PermissionState
+        except Exception:
+            return
+
+        def on_request(sender, args):
+            try:
+                if str(args.Uri).startswith(origin):
+                    args.State = CoreWebView2PermissionState.Allow
+            except Exception:
+                pass
+
+        WebPermissions._keep = on_request  # 保留參考，避免被回收
+
+        def attach_on_ui():
+            # WebView2 的物件只能在畫面執行緒（UI thread）存取
+            try:
+                ctl = window.native.browser.webview
+                core = ctl.CoreWebView2
+                if core is None:
+                    return False
+                core.PermissionRequested += on_request
+                return True
+            except Exception:
+                return False
+
+        def worker():
+            for _ in range(100):
+                try:
+                    if window.native.Invoke(Func[Boolean](attach_on_ui)):
+                        return
+                except Exception:
+                    pass
+                time.sleep(0.1)
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 class DisplayScale:
@@ -542,6 +991,7 @@ def main():
 
     def on_start():
         if IS_WIN:
+            WebPermissions.install(window, server.url.rstrip("/"))
             DisplayScale.fit(window)
         if tester:
             threading.Thread(target=tester.run, daemon=True).start()

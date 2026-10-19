@@ -7,7 +7,7 @@ import { MediaSet } from './media.js';
 import { Recording, RecorderSupport, listDevices, unlockDeviceLabels } from './recorder.js';
 import { Desktop, whenDesktopReady, desktopInfo, NativeRec } from './desktop.js';
 import { APP_VERSION, checkWebUpdate, checkDesktopUpdate, applyWebUpdate, registerSW } from './updater.js';
-import { Shortcuts, DEFAULT_SHORTCUTS } from './shortcuts.js';
+import { Shortcuts, DEFAULT_SHORTCUTS, RECORD_ACTIONS } from './shortcuts.js';
 import { openEditor, closeEditor } from './editor.js';
 
 const app = $('#app');
@@ -235,6 +235,7 @@ export async function createProjectFromBlobs(spec) {
     console.error(e);
     busy.close();
     toast(t('openFailed') + ' ' + (e.message || e), true, 6000);
+    showHome();
   }
 }
 
@@ -285,20 +286,26 @@ async function startRecording() {
   activeRec = rec;
   navToken++;
   showRecView(rec, useNative);
-  await countdown(prefs.countdown);
+  if (Desktop.available) {
+    // 桌面版：主視窗縮小到工作列，右下角出現迷你控制列（倒數、計時、暫停、停止、麥克風），系統列也有小圖示
+    try { await Desktop.api.rec_begin({ countdown: prefs.countdown, mic: rec.mic ? rec.mic.enabled : null }); } catch { }
+    await sleep(prefs.countdown * 1000 + 250);
+  } else await countdown(prefs.countdown);
   try {
+    // 原生錄影（Python）與麥克風／攝影機（網頁）同時啟動，縮短倒數結束到真正開始錄的空檔
+    const nativeP = useNative ? NativeRec.start({ target: prefs.nativeTarget, fps: prefs.fps, systemAudio: prefs.sys }) : null;
+    const webP = (rec.tracks.mic || rec.tracks.camera || rec.tracks.screen) ? rec.start() : null;
+    const [r] = await Promise.all([nativeP, webP]);
     if (useNative) {
-      const r = await NativeRec.start({ target: prefs.nativeTarget, fps: prefs.fps, systemAudio: prefs.sys });
-      if (r.status !== 'ok') throw new Error(r.message || 'native');
+      if (r?.status !== 'ok') throw new Error(r?.message || 'native');
       rec.native = true;
     }
-    if (rec.tracks.mic || rec.tracks.camera || rec.tracks.screen) await rec.start();
-    else { rec.sources = []; rec.state = 'recording'; rec.output = { finalize: async () => { }, cancel: async () => { } }; }
-    rec._t0 = performance.now();
+    if (!webP) { rec.sources = []; rec.state = 'recording'; rec._t0 = performance.now(); rec.output = { finalize: async () => { }, cancel: async () => { } }; }
   } catch (e) {
     activeRec = null;
     await rec.cancel();
     if (rec.native) NativeRec.cancel();
+    if (Desktop.available) Desktop.api.rec_end().catch(() => { });
     toast(t('recStartFailed') + ' ' + (e.message || e), true, 6000);
     return showHome();
   }
@@ -306,6 +313,7 @@ async function startRecording() {
 }
 
 function showRecView(rec, native) {
+  let pipWin = null, pipTime = null; // 浮動控制列（要在計時器第一次執行前宣告）
   const view = h('div', { class: 'view rec-view' });
   const stage = h('div', { class: 'rec-stage' });
   if (rec.display || rec.camStream) {
@@ -315,8 +323,9 @@ function showRecView(rec, native) {
   } else stage.append(h('div', { class: 'note' }, ic('screen'), ' ', t('nativeRecording')));
   const time = h('span', {}, '00:00');
   const timeBox = h('div', { class: 'rec-time' }, h('i', { class: 'rec-dot' }), time);
-  const pauseBtn = h('button', { class: 'btn', onclick: () => togglePause() }, ic('pause'), h('span', {}, t('pause')));
-  const stopBtn = h('button', { class: 'btn rec', onclick: () => finish() }, ic('stop'), t('stopRec'));
+  const L = a => Shortcuts.label(Shortcuts.map[a]);
+  const pauseBtn = h('button', { class: 'btn', title: L('recordPause'), onclick: () => togglePause() }, ic('pause'), h('span', {}, t('pause')));
+  const stopBtn = h('button', { class: 'btn rec', title: L('recordStop'), onclick: () => finish() }, ic('stop'), t('stopRec'));
   const cancelBtn = h('button', { class: 'btn ghost', onclick: async () => { if (await confirmBox(t('discardConfirm'), t('discard'), true)) discard(); } }, ic('trash'), h('span', { class: 'hide-sm' }, t('discard')));
 
   // ---- 麥克風控制：開／關、換麥克風、音量表 ----
@@ -347,17 +356,30 @@ function showRecView(rec, native) {
 
   const pipBtn = 'documentPictureInPicture' in window ? h('button', { class: 'btn ghost hide-sm', title: t('floatingBar'), onclick: () => openPip() }, ic('pip')) : null;
   const hud = h('div', { class: 'rec-hud' }, timeBox, pauseBtn, stopBtn, micBox, pipBtn, cancelBtn);
-  view.append(stage, hud);
+  const hint = h('div', { class: 'small dim', style: { textAlign: 'center', padding: '0 12px 8px', background: 'var(--panel)' } },
+    t(Desktop.available ? 'hotkeysHint' : 'hotkeysHintWeb', { pause: L('recordPause'), stop: L('recordStop'), mic: L('micToggle') }));
+  view.append(stage, hud, hint);
   app.replaceChildren(view);
 
-  let raf;
+  // 計時用 setInterval：主視窗被別的視窗蓋住或縮小時 requestAnimationFrame 會停，計時會看起來不動
   const tick = () => {
-    raf = requestAnimationFrame(tick);
     time.textContent = fmtTime(rec.time, false);
     if (rec.mic) meter.style.width = Math.min(100, rec.mic.level() * 140) + '%';
     if (pipTime) pipTime.textContent = time.textContent;
   };
+  const raf = setInterval(tick, 200);
   tick();
+  // 把狀態告訴 Python（迷你控制列與系統列圖示的計時、按鈕狀態）
+  const pushState = () => { if (Desktop.available && !rec._finishing) Desktop.api.rec_update({ state: rec.state === 'paused' ? 'paused' : rec.state === 'recording' ? 'recording' : 'countdown', elapsed: rec.time, mic: rec.mic ? rec.mic.enabled : null }).catch(() => { }); };
+  rec.on('state', pushState);
+  rec.mic?.on('change', pushState);
+  // 迷你控制列／系統列按下的指令
+  window.__xkrCommand = cmd => {
+    if (cmd === 'pause') togglePause();
+    else if (cmd === 'stop') finish();
+    else if (cmd === 'mic' && rec.mic) rec.mic.setEnabled(!rec.mic.enabled);
+    else if (cmd === 'discard') discard();
+  };
 
   async function togglePause() {
     if (rec.state === 'recording') { rec.pause(); if (rec.native) await NativeRec.pause(); }
@@ -377,8 +399,10 @@ function showRecView(rec, native) {
   async function finish() {
     if (rec._finishing) return;
     rec._finishing = true;
-    cancelAnimationFrame(raf);
+    clearInterval(raf);
     pipWin?.close();
+    window.__xkrCommand = null;
+    if (Desktop.available) await Desktop.api.rec_end().catch(() => { });
     const busy = dialog(t('preparing'), h('p', {}, t('savingRecording')));
     try {
       const res = await rec.stop();
@@ -405,9 +429,11 @@ function showRecView(rec, native) {
     }
   }
   async function discard() {
-    cancelAnimationFrame(raf);
+    clearInterval(raf);
     pipWin?.close();
     rec._finishing = true;
+    window.__xkrCommand = null;
+    if (Desktop.available) await Desktop.api.rec_end().catch(() => { });
     await rec.cancel();
     if (rec.native) await NativeRec.cancel();
     activeRec = null;
@@ -415,7 +441,6 @@ function showRecView(rec, native) {
   }
 
   // 浮動控制列（Chrome／Edge：錄別的視窗時也能看到時間和按鈕）
-  let pipWin = null, pipTime = null;
   async function openPip() {
     try {
       pipWin = await documentPictureInPicture.requestWindow({ width: 340, height: 64 });
@@ -471,7 +496,7 @@ export async function showSettings() {
     }));
   };
   paintSc();
-  body.append(scList, h('button', { class: 'btn sm', style: { marginTop: '8px' }, onclick: () => { Shortcuts.reset(); paintSc(); } }, t('resetShortcuts')));
+  body.append(h('div', { class: 'note small', style: { marginBottom: '6px' } }, t('globalHotkeyNote')), scList, h('button', { class: 'btn sm', style: { marginTop: '8px' }, onclick: () => { Shortcuts.reset(); paintSc(); } }, t('resetShortcuts')));
 
   // 安裝說明
   body.append(h('h3', {}, t('installApp')), h('div', { class: 'small dim', html: t('installHelp') }));
@@ -479,23 +504,44 @@ export async function showSettings() {
   dialog(t('settings'), body, [{ label: t('close'), value: true, cls: 'pri' }]);
 }
 
-// ======================= 全域快速鍵（錄影中）=======================
-addEventListener('keydown', e => {
-  if (e.target.closest?.('input,textarea,select,[contenteditable]')) return;
-  const a = Shortcuts.match(e);
-  if (!a) return;
+// ======================= 錄影熱鍵：開始、暫停／繼續、停止、麥克風 =======================
+// 網頁版：頁面在前景時有效。桌面版：Python 註冊成「全域熱鍵」，在其他程式裡、主視窗縮小時都有效。
+function recordHotkey(a) {
   if (activeRec) {
-    if (a === 'recordPause') { e.preventDefault(); activeRec.togglePause?.(); }
-    else if (a === 'micToggle' && activeRec.mic) { e.preventDefault(); activeRec.mic.setEnabled(!activeRec.mic.enabled); }
-    else if (a === 'recordStart') { e.preventDefault(); activeRec.finish?.(); }
-  } else if (a === 'recordStart' && $('#home')) { e.preventDefault(); startRecording(); }
+    if (a === 'recordPause') activeRec.togglePause?.();
+    else if (a === 'recordStop') activeRec.finish?.();
+    else if (a === 'micToggle' && activeRec.mic) activeRec.mic.setEnabled(!activeRec.mic.enabled);
+    else return false;
+    return true;
+  }
+  if (a === 'recordStart') { closeEditor(); startRecording(); return true; }
+  return false;
+}
+window.__xkrHotkey = a => recordHotkey(String(a));
+
+addEventListener('keydown', e => {
+  if (e.target.closest?.('input,textarea,select,[contenteditable]') || document.querySelector('dialog[open] .kbd.listen')) return;
+  const a = Shortcuts.match(e);
+  if (!a || !RECORD_ACTIONS.includes(a)) return;
+  if (Desktop.available && hotkeysRegistered) { e.preventDefault(); return; } // 桌面版由全域熱鍵處理，避免觸發兩次
+  if (recordHotkey(a)) e.preventDefault();
 });
+
+let hotkeysRegistered = false;
+async function syncHotkeys() {
+  if (!Desktop.available) return;
+  const m = {};
+  for (const a of RECORD_ACTIONS) if (Shortcuts.map[a]) m[a] = Shortcuts.map[a];
+  try { const r = await Desktop.api.set_hotkeys(m); hotkeysRegistered = r?.status === 'ok'; } catch { hotkeysRegistered = false; }
+}
+Shortcuts.onChange(syncHotkeys);
 
 // ======================= 啟動 =======================
 async function boot() {
   registerSW();
   await whenDesktopReady(Desktop.available ? 0 : (location.hostname === '127.0.0.1' ? 2500 : 300));
   await desktopInfo();
+  syncHotkeys();
   document.documentElement.classList.toggle('desktop-app', Desktop.available);
   onLangChange(() => { if ($('#home')) showHome(); else window.dispatchEvent(new Event('xkr-lang')); });
   const q = new URLSearchParams(location.search);

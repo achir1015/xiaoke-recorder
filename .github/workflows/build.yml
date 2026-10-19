@@ -102,7 +102,7 @@ jobs:
         working-directory: desktop
         run: |
           python -m pip install -r requirements.txt
-          mkdir -p web && cp ../index.html ../version.json ../sw.js ../manifest.webmanifest ../favicon.svg ../favicon-32.png ../favicon-16.png ../apple-touch-icon.png web/
+          mkdir -p web && cp ../index.html ../mini.html ../version.json ../sw.js ../manifest.webmanifest ../favicon.svg ../favicon-32.png ../favicon-16.png ../apple-touch-icon.png web/
           cp -R ../css ../js ../vendor ../icons web/
           mkdir -p app.iconset
           for s in 16 32 128 256 512; do
@@ -176,7 +176,7 @@ jobs:
         working-directory: desktop
         run: |
           python -m pip install -r requirements.txt
-          mkdir -p web && cp ../index.html ../version.json ../sw.js ../manifest.webmanifest ../favicon.svg ../favicon-32.png ../favicon-16.png ../apple-touch-icon.png web/
+          mkdir -p web && cp ../index.html ../mini.html ../version.json ../sw.js ../manifest.webmanifest ../favicon.svg ../favicon-32.png ../favicon-16.png ../apple-touch-icon.png web/
           cp -R ../css ../js ../vendor ../icons web/
       - name: PyInstaller 打包
         working-directory: desktop

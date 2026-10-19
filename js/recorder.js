@@ -3,7 +3,7 @@
 // 麥克風經過 Web Audio 混音器：錄影中可以隨時「開／關」或「換一支麥克風」，錄影不中斷。
 import {
   Output, Mp4OutputFormat, StreamTarget, MediaStreamVideoTrackSource, MediaStreamAudioTrackSource,
-  getFirstEncodableVideoCodec, getFirstEncodableAudioCodec, canEncodeVideo,
+  getFirstEncodableVideoCodec, getFirstEncodableAudioCodec, canEncodeVideo, canEncodeAudio, canDecodeVideo, canDecodeAudio,
 } from '../vendor/mediabunny.min.mjs';
 import { Emitter } from './util.js';
 
@@ -84,6 +84,20 @@ export class MicMixer extends Emitter {
   }
 }
 
+// 錄影用的編碼要「編得出來、也解得回去」：Mac／Linux 桌面版的畫面引擎能編 H.264／AAC 卻不能解，要改用 VP9／Opus
+export async function pickVideoCodec(list, width, height) {
+  for (const c of list) {
+    try { if (await canEncodeVideo(c, { width, height }) && await canDecodeVideo(c)) return c; } catch { }
+  }
+  return await getFirstEncodableVideoCodec(list, { width, height });
+}
+export async function pickAudioCodec(list) {
+  for (const c of list) {
+    try { if (await canEncodeAudio(c, { numberOfChannels: 2, sampleRate: 48000 }) && await canDecodeAudio(c, { numberOfChannels: 2, sampleRate: 48000 })) return c; } catch { }
+  }
+  return await getFirstEncodableAudioCodec(list, { numberOfChannels: 2, sampleRate: 48000 });
+}
+
 function pickBitrate(w, h, fps) {
   return Math.round(Math.min(40e6, Math.max(3e6, w * h * fps * 0.12)));
 }
@@ -162,18 +176,18 @@ export class Recording extends Emitter {
     const fps = this.opts.fps || 30;
     if (this.tracks.screen) {
       const w = this.width || 1920, h = this.height || 1080;
-      const codec = await getFirstEncodableVideoCodec(['avc', 'vp9', 'av1', 'vp8'], { width: w, height: h }) || 'avc';
+      const codec = await pickVideoCodec(['avc', 'vp9', 'av1', 'vp8'], w, h) || 'avc';
       const src = new MediaStreamVideoTrackSource(this.tracks.screen, { codec, bitrate: pickBitrate(w, h, fps), keyFrameInterval: 1, sizeChangeBehavior: 'contain' }, { frameRate: fps });
       this.output.addVideoTrack(src, { name: 'screen', frameRate: fps });
       this.sources.push(src); this.layout.screen = vi++;
     }
     if (this.tracks.camera) {
-      const codec = (await canEncodeVideo('avc', { width: 1280, height: 720 })) ? 'avc' : 'vp9';
+      const codec = await pickVideoCodec(['avc', 'vp9', 'vp8'], 1280, 720) || 'vp9';
       const src = new MediaStreamVideoTrackSource(this.tracks.camera, { codec, bitrate: 3e6, keyFrameInterval: 1, sizeChangeBehavior: 'contain' }, { frameRate: 30 });
       this.output.addVideoTrack(src, { name: 'camera', frameRate: 30 });
       this.sources.push(src); this.layout.camera = vi++;
     }
-    const acodec = await getFirstEncodableAudioCodec(['aac', 'opus'], { numberOfChannels: 2, sampleRate: 48000 }) || 'opus';
+    const acodec = await pickAudioCodec(['aac', 'opus']) || 'opus';
     for (const name of ['mic', 'sys']) {
       if (!this.tracks[name]) continue;
       const src = new MediaStreamAudioTrackSource(this.tracks[name], { codec: acodec, bitrate: 160e3 });

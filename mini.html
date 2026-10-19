@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小柯錄影中</title>
+<!-- 桌面版錄影中的迷你控制列（右下角、永遠在最上層）。計時由 Python 累積，暫停不計。 -->
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #171a21; color: #e8eaf0; font: 600 14px/1 "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; overflow: hidden; user-select: none; }
+  body { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid #2a2f3a; box-sizing: border-box; border-radius: 12px; }
+  .drag { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 100%; cursor: move; }
+  .drag img { width: 30px; height: 30px; border-radius: 8px; pointer-events: none; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: #ff3b30; animation: blink 1s infinite; flex: none; }
+  .paused .dot { animation: none; background: #ffb020; }
+  @keyframes blink { 50% { opacity: .2; } }
+  #time { font: 700 20px/1 ui-monospace, Consolas, Menlo, monospace; font-variant-numeric: tabular-nums; }
+  #cd { font: 800 26px/1 system-ui; color: #ffd23f; }
+  button { width: 38px; height: 38px; border-radius: 10px; border: 1px solid #2a2f3a; background: #232834; color: #fff; display: grid; place-items: center; cursor: pointer; padding: 0; flex: none; }
+  button:hover { background: #2e3442; }
+  button.stop { background: #ff3b30; border-color: #ff3b30; }
+  button.off { color: #ff8b80; }
+  svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="drag pywebview-drag-region">
+  <img src="icons/icon-192.png" alt="">
+  <span class="dot" id="dot"></span>
+  <span id="time">00:00</span>
+  <span id="cd" class="hidden"></span>
+</div>
+<button id="pause" title=""><svg viewBox="0 0 24 24" id="pauseIco"></svg></button>
+<button id="mic" title="" class="hidden"><svg viewBox="0 0 24 24" id="micIco"></svg></button>
+<button id="stop" class="stop" title=""><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
+<button id="discard" title=""><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+<script type="module">
+import { t } from './js/i18n.js';
+const $ = id => document.getElementById(id);
+const ICON = {
+  pause: '<rect x="6" y="4" width="4" height="16" rx="1" fill="currentColor"/><rect x="14" y="4" width="4" height="16" rx="1" fill="currentColor"/>',
+  play: '<circle cx="12" cy="12" r="7" fill="#ff3b30" stroke="none"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5"/>',
+  micOff: '<path d="M2 2l20 20M9 9v1a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.7M17 16.9A7 7 0 0 1 5 10M12 17v5"/>',
+};
+$('stop').title = t('stopRec');
+$('discard').title = t('discard');
+const api = () => window.pywebview && window.pywebview.api;
+const send = cmd => api()?.rec_command(cmd);
+$('pause').onclick = () => send('pause');
+$('stop').onclick = () => send('stop');
+$('mic').onclick = () => send('mic');
+$('discard').onclick = () => { if (confirm(t('discardConfirm'))) send('discard'); };
+const fmt = s => { s = Math.max(0, Math.floor(s)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, ss = s % 60; return (h ? h + ':' : '') + String(m).padStart(2, '0') + ':' + String(ss).padStart(2, '0'); };
+let last = null, base = 0, at = 0;
+async function poll() {
+  try {
+    const st = await api()?.rec_state();
+    if (st) { last = st; base = st.elapsed; at = performance.now(); paint(); }
+  } catch { }
+}
+function paint() {
+  const st = last;
+  if (!st) return;
+  const cd = st.state === 'countdown';
+  $('cd').classList.toggle('hidden', !cd);
+  $('time').classList.toggle('hidden', cd);
+  $('dot').classList.toggle('hidden', cd);
+  document.body.classList.toggle('paused', st.state === 'paused');
+  const live = st.state === 'recording' ? (performance.now() - at) / 1000 : 0;
+  $('time').textContent = fmt(base + live);
+  $('cd').textContent = Math.ceil(st.countdown || 0) || '…';   // 倒數結束、錄影正在啟動
+  $('pauseIco').innerHTML = st.state === 'paused' ? ICON.play : ICON.pause;
+  $('pause').title = st.state === 'paused' ? t('resume') : t('pause');
+  $('mic').classList.toggle('hidden', st.mic === null || st.mic === undefined);
+  $('micIco').innerHTML = st.mic ? ICON.mic : ICON.micOff;
+  $('mic').classList.toggle('off', !st.mic);
+  $('mic').title = t('micToggle');
+}
+// Windows「文字大小」放大時整頁會被放大：依視窗實際大小把內容縮放到剛好放得下
+const fit = () => { const k = Math.min(innerWidth / 380, innerHeight / 64); document.documentElement.style.zoom = k > 0 ? k : 1; };
+addEventListener('resize', fit); fit();
+setInterval(poll, 500);
+setInterval(paint, 200);
+window.addEventListener('pywebviewready', poll);
+</script>
+</body>
+</html>

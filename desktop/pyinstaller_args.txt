@@ -31,3 +31,5 @@ pynput.mouse._win32
 pynput.keyboard._win32
 --hidden-import
 pynput._util.win32
+--collect-submodules
+pystray

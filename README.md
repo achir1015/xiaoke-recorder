@@ -24,6 +24,8 @@
 ## 功能
 
 - 錄製整個螢幕、特定視窗或瀏覽器分頁；30／60 fps；倒數；暫停／繼續
+- **錄影熱鍵**：開始 `Ctrl+Alt+R`、暫停／繼續 `Ctrl+Alt+P`、停止 `Ctrl+Alt+S`、麥克風 `Ctrl+Alt+M`（Mac 為 `⌘⌥`），可自訂；桌面版是全域熱鍵，在其他程式裡也能用
+- **錄影時主視窗自動縮小**（桌面版）：右下角出現迷你控制列（計時、暫停、停止、麥克風、放棄），系統列也有小圖示可操作；計時只累積實際錄影時間；迷你控制列不會被錄進影片（Windows）
 - **麥克風**與**系統聲音**分軌錄製，錄影中可以隨時**開／關麥克風、切換其他麥克風**（不會中斷錄影），有音量表
 - 網路攝影機畫中畫：拖曳定位、鏡像、圓形／圓角／方形／寬螢幕／直式、外框、陰影、放大時自動縮小
 - 自動或手動縮放：放大倍率、轉場時間、7 種緩動效果、像素級精確位置；自動縮放會跟隨游標（桌面版）或畫面變化（網頁版）
@@ -104,7 +106,7 @@ powershell -ExecutionPolicy Bypass -File build_windows.ps1
 ```bash
 cd desktop
 python3 -m pip install -r requirements.txt
-mkdir -p web && cp ../index.html ../version.json ../sw.js ../manifest.webmanifest ../*.png ../favicon.svg web/ && cp -R ../css ../js ../vendor ../icons web/
+mkdir -p web && cp ../index.html ../mini.html ../version.json ../sw.js ../manifest.webmanifest ../*.png ../favicon.svg web/ && cp -R ../css ../js ../vendor ../icons web/
 python3 -m PyInstaller $(cat pyinstaller_args.txt | tr '\n' ' ') --add-data "web:web" app.py
 hdiutil create -volname 小柯機器人螢幕錄製工具 -srcfolder dist/XiaokeRecorder.app -format UDZO XiaokeRecorder.dmg
 ```
@@ -112,7 +114,7 @@ hdiutil create -volname 小柯機器人螢幕錄製工具 -srcfolder dist/Xiaoke
 ### Linux AppImage／.deb
 ```bash
 cd desktop && python3 -m pip install -r requirements.txt
-mkdir -p web && cp ../index.html ../version.json ../sw.js ../manifest.webmanifest ../*.png ../favicon.svg web/ && cp -R ../css ../js ../vendor ../icons web/
+mkdir -p web && cp ../index.html ../mini.html ../version.json ../sw.js ../manifest.webmanifest ../*.png ../favicon.svg web/ && cp -R ../css ../js ../vendor ../icons web/
 python3 -m PyInstaller $(cat pyinstaller_args.txt | tr '\n' ' ') --add-data "web:web" --distpath ../dist app.py
 cd .. && bash desktop/linux/package.sh 1.0.0
 ```

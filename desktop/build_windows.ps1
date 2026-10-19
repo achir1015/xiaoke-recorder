@@ -5,7 +5,7 @@ python -m pip install -r requirements.txt
 # 準備網頁資源（和線上版同一份）
 Remove-Item -Recurse -Force web -ErrorAction SilentlyContinue
 New-Item -ItemType Directory web | Out-Null
-Copy-Item ..\index.html, ..\version.json, ..\sw.js, ..\manifest.webmanifest, ..\favicon.svg, ..\favicon-32.png, ..\favicon-16.png, ..\apple-touch-icon.png web\
+Copy-Item ..\index.html, ..\mini.html, ..\version.json, ..\sw.js, ..\manifest.webmanifest, ..\favicon.svg, ..\favicon-32.png, ..\favicon-16.png, ..\apple-touch-icon.png web\
 foreach ($d in 'css', 'js', 'vendor', 'icons') { Copy-Item -Recurse ..\$d web\$d }
 # 打包成資料夾版執行檔
 $piArgs = Get-Content pyinstaller_args.txt | Where-Object { $_ -ne '' }

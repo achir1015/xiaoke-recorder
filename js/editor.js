@@ -20,6 +20,7 @@ let E = null; // 目前開啟的編輯器
 
 export function closeEditor() {
   if (!E) return;
+  E.save(); // 離開前存檔（例如在編輯中按了開始錄影熱鍵）
   E.dispose();
   E = null;
 }
