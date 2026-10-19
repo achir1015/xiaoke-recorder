@@ -49,6 +49,20 @@ sys.path.insert(0, str(BASE))
 import native  # noqa: E402
 
 
+def safe_print(text: str):
+    """視窗程式的主控台可能不支援中文（例如 cp1252）：印不出來就改用跳脫字元，絕不讓程式因此出錯。"""
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        print(text, file=out, flush=True)
+    except Exception:
+        try:
+            print(text.encode("ascii", "backslashreplace").decode("ascii"), file=out, flush=True)
+        except Exception:
+            pass
+
+
 def _bundled_version() -> str:
     try:
         return json.loads((BASE / "web" / "version.json").read_text(encoding="utf-8"))["version"]
@@ -852,7 +866,7 @@ class SelfTest:
                     break
                 prog = self.window.evaluate_js("window.__kkProgress || ''")
                 if prog and prog != last:
-                    print("[selftest]", prog, flush=True)
+                    safe_print("[selftest] " + prog)
                     last = prog
             report["web"] = json.loads(res) if res else {"ok": False, "note": "網頁沒有回傳測試結果"}
             self.screenshot("selftest-editor.png")
