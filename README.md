@@ -1,5 +1,7 @@
 # 小柯機器人螢幕錄製工具（Xiaoke Screen Recorder）
 
+<img width="1461" height="932" alt="image" src="https://github.com/user-attachments/assets/90ffacbd-5a84-45c0-aa12-ef8b4e7b9012" />
+
 <img src="icons/icon-512.png" width="120" align="right" alt="小柯機器人螢幕錄製工具">
 
 免費、開源的螢幕錄影＋剪輯工具。錄下螢幕、麥克風、系統聲音與攝影機，自動放大、加字幕、換背景、加註解，一鍵匯出 **MP4 影片／GIF 動畫／MP3 聲音**。
