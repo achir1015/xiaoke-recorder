@@ -1,0 +1,9 @@
+.claude/
+_pkg/
+build/
+dist/
+dist-installer/
+__pycache__/
+*.spec
+desktop/web/
+node_modules/

@@ -1,0 +1,11 @@
+pywebview>=5.3,<6
+PyQt6>=6.7 ; sys_platform != "win32"
+PyQt6-WebEngine>=6.7 ; sys_platform != "win32"
+qtpy>=2.4 ; sys_platform != "win32"
+pyinstaller>=6.10,<7
+pillow>=10.4
+pynput>=1.7.7
+soundcard>=0.4.3
+imageio-ffmpeg>=0.5.1
+screeninfo>=0.8.1
+numpy>=1.26

@@ -1,0 +1,13 @@
+--noconfirm
+--clean
+--windowed
+--name
+XiaokeRecorder
+--collect-data
+soundcard
+--collect-binaries
+imageio_ffmpeg
+--collect-submodules
+pynput
+--hidden-import
+native

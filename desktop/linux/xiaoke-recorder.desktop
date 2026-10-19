@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=小柯機器人螢幕錄製工具
+Name[en]=Xiaoke Screen Recorder
+Comment=錄螢幕、剪輯、匯出 MP4／GIF／MP3
+Comment[en]=Record your screen, edit and export MP4/GIF/MP3
+Exec=xiaoke-recorder %U
+Icon=xiaoke-recorder
+Categories=AudioVideo;Video;Recorder;
+Terminal=false
+StartupWMClass=XiaokeRecorder

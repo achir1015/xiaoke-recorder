@@ -1,0 +1,234 @@
+name: 建置、測試與發佈（Windows／Mac／Linux）
+
+# 推到 main：檢查 → 三個平台打包並安裝後自我測試 → 全部通過才發佈 GitHub Release（版本號取自 version.json）
+on:
+  push:
+    branches: [main]
+    paths: ['index.html', 'version.json', 'sw.js', 'css/**', 'js/**', 'vendor/**', 'icons/**', 'desktop/**', '.github/workflows/build.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: 檢查版本號與語言檔
+    runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.ver.outputs.ver }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: 版本號一致
+        id: ver
+        run: |
+          V=$(python3 -c 'import json;print(json.load(open("version.json"))["version"])')
+          grep -q "export const APP_VERSION = '$V';" js/updater.js || { echo "::error::js/updater.js 的 APP_VERSION 和 version.json（$V）不一致"; exit 1; }
+          echo "ver=$V" >> "$GITHUB_OUTPUT"
+      - name: 13 種語言字串完整
+        run: node tools/check_i18n.mjs
+      - name: JavaScript 語法
+        run: for f in js/*.js js/lang/*.js; do node --check "$f" || exit 1; done
+
+  windows:
+    name: Windows
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: 打包（PyInstaller＋Inno Setup）
+        working-directory: desktop
+        shell: pwsh
+        run: ./build_windows.ps1
+      - name: 靜默安裝
+        shell: pwsh
+        run: |
+          function Note($title, $text) { $t = ($text | Out-String) -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'; Write-Host "::warning title=$title::$t" }
+          $setup = Get-ChildItem dist-installer\*.exe | Select-Object -First 1
+          Note '安裝檔' "$($setup.Name) $([math]::Round($setup.Length/1MB,1)) MB"
+          $dir = 'C:\KKTest\XiaokeRecorder'
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /DIR=`"$dir`" /LOG=`"C:\KKTest\install.log`"" -Wait -PassThru
+          if (-not (Test-Path "$dir\XiaokeRecorder.exe")) { throw '找不到安裝後的執行檔' }
+      - name: 安裝後自我測試
+        shell: pwsh
+        run: |
+          function Note($title, $text) { $t = ($text | Out-String) -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'; Write-Host "::warning title=$title::$t" }
+          New-Item -ItemType Directory C:\KKTest\out -Force | Out-Null
+          $p = Start-Process -FilePath 'C:\KKTest\XiaokeRecorder\XiaokeRecorder.exe' -ArgumentList '--selftest C:\KKTest\out\report.json' -PassThru
+          if (-not $p.WaitForExit(300000)) { Stop-Process $p -Force }
+          if (-not (Test-Path C:\KKTest\out\report.json)) { throw '沒有產生測試報告' }
+          $r = Get-Content C:\KKTest\out\report.json -Raw -Encoding UTF8
+          Note '自我測試報告（Windows）' $r
+          if (-not ($r | ConvertFrom-Json).ok) { throw '自我測試未通過' }
+      - name: 解除安裝
+        if: always()
+        shell: pwsh
+        run: if (Test-Path C:\KKTest\XiaokeRecorder\unins000.exe) { Start-Process C:\KKTest\XiaokeRecorder\unins000.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES' -Wait }
+      - name: 收集結果
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory test-output -Force | Out-Null
+          Copy-Item C:\KKTest\out\*.json, C:\KKTest\out\*.png test-output\ -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows
+          path: |
+            dist-installer/*.exe
+            test-output/
+
+  mac:
+    name: Mac（${{ matrix.arch }}）
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, arch: AppleSilicon }
+          - { os: macos-15-intel, arch: Intel }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.arch == 'Intel' }}   # GitHub 的 Intel Mac 逐步淘汰，不擋住發佈
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: 安裝套件、準備網頁與圖示
+        working-directory: desktop
+        run: |
+          python -m pip install -r requirements.txt
+          mkdir -p web && cp ../index.html ../version.json ../sw.js ../manifest.webmanifest ../favicon.svg ../favicon-32.png ../favicon-16.png ../apple-touch-icon.png web/
+          cp -R ../css ../js ../vendor ../icons web/
+          mkdir -p app.iconset
+          for s in 16 32 128 256 512; do
+            sips -z $s $s ../icons/icon-1024.png --out app.iconset/icon_${s}x${s}.png >/dev/null
+            d=$((s*2)); sips -z $d $d ../icons/icon-1024.png --out app.iconset/icon_${s}x${s}@2x.png >/dev/null
+          done
+          iconutil -c icns app.iconset -o app.icns
+      - name: PyInstaller 打包成 .app
+        working-directory: desktop
+        run: |
+          python -m PyInstaller $(cat pyinstaller_args.txt | tr '\n' ' ') --icon app.icns --add-data "web:web" \
+            --osx-bundle-identifier org.achir1015.xiaokerecorder --distpath ../dist --workpath ../build app.py
+          cd ../dist
+          APP="小柯機器人螢幕錄製工具.app"
+          mv XiaokeRecorder.app "$APP"
+          P="$APP/Contents/Info.plist"
+          V=${{ needs.check.outputs.ver }}
+          plutil -replace CFBundleDisplayName -string "小柯機器人螢幕錄製工具" "$P"
+          plutil -replace CFBundleShortVersionString -string "$V" "$P"
+          plutil -replace CFBundleVersion -string "$V" "$P"
+          plutil -replace NSHighResolutionCapable -bool true "$P"
+          plutil -replace NSMicrophoneUsageDescription -string "錄影時錄下你的聲音" "$P"
+          plutil -replace NSCameraUsageDescription -string "錄影時加入攝影機畫中畫" "$P"
+          plutil -replace NSScreenCaptureUsageDescription -string "錄製螢幕畫面" "$P" || true
+          codesign --force --deep -s - "$APP"
+          du -sh "$APP"
+      - name: 自我測試
+        continue-on-error: ${{ matrix.arch == 'Intel' }}
+        env:
+          QTWEBENGINE_DISABLE_SANDBOX: '1'
+        run: |
+          mkdir -p "$RUNNER_TEMP/kk" test-output
+          "dist/小柯機器人螢幕錄製工具.app/Contents/MacOS/XiaokeRecorder" --selftest "$RUNNER_TEMP/kk/report.json" &
+          PID=$!
+          for i in $(seq 1 150); do [ -f "$RUNNER_TEMP/kk/report.json" ] && break; sleep 2; done
+          sleep 3; kill $PID 2>/dev/null || true
+          cp "$RUNNER_TEMP"/kk/*.json "$RUNNER_TEMP"/kk/*.png test-output/ 2>/dev/null || true
+          [ -f test-output/report.json ] || { echo "::error::沒有產生測試報告"; exit 1; }
+          python3 tools/report.py test-output/report.json "Mac ${{ matrix.arch }}"
+      - name: 製作 .dmg
+        run: |
+          mkdir dmg
+          ditto "dist/小柯機器人螢幕錄製工具.app" "dmg/小柯機器人螢幕錄製工具.app"
+          ln -s /Applications dmg/Applications
+          cp desktop/MAC_README.txt "dmg/第一次開啟請看這裡.txt"
+          hdiutil create -volname "小柯機器人螢幕錄製工具" -srcfolder dmg -ov -format UDZO "XiaokeRecorder-mac-${{ matrix.arch }}-${{ needs.check.outputs.ver }}.dmg"
+          ls -lh *.dmg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-${{ matrix.arch }}
+          path: |
+            *.dmg
+            test-output/
+
+  linux:
+    name: Linux（AppImage／deb）
+    needs: check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: 系統套件
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libegl1 libgl1 libnss3 libxcomposite1 libxdamage1 libxrandr2 \
+            libxtst6 libasound2 libpulse0 pulseaudio libfuse2 desktop-file-utils
+      - name: 安裝套件、準備網頁
+        working-directory: desktop
+        run: |
+          python -m pip install -r requirements.txt
+          mkdir -p web && cp ../index.html ../version.json ../sw.js ../manifest.webmanifest ../favicon.svg ../favicon-32.png ../favicon-16.png ../apple-touch-icon.png web/
+          cp -R ../css ../js ../vendor ../icons web/
+      - name: PyInstaller 打包
+        working-directory: desktop
+        run: python -m PyInstaller $(cat pyinstaller_args.txt | tr '\n' ' ') --add-data "web:web" --distpath ../dist --workpath ../build app.py
+      - name: 自我測試（虛擬螢幕）
+        env:
+          QTWEBENGINE_DISABLE_SANDBOX: '1'
+        run: |
+          mkdir -p test-output
+          pulseaudio --start --exit-idle-time=-1 || true
+          timeout 300 xvfb-run -a -s "-screen 0 1920x1080x24" dist/XiaokeRecorder/XiaokeRecorder --selftest "$PWD/test-output/report.json" || true
+          [ -f test-output/report.json ] || { echo "::error::沒有產生測試報告"; exit 1; }
+          python3 tools/report.py test-output/report.json "Linux"
+      - name: 製作 AppImage 與 .deb
+        run: |
+          V=${{ needs.check.outputs.ver }}
+          bash desktop/linux/package.sh "$V"
+          ls -lh *.AppImage *.deb
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux
+          path: |
+            *.AppImage
+            *.deb
+            test-output/
+
+  release:
+    name: 發佈到 GitHub Releases
+    needs: [check, windows, mac, linux]
+    if: success() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: 整理檔案與說明
+        run: |
+          mkdir release
+          cp artifacts/windows/dist-installer/*.exe release/
+          cp artifacts/mac-*/*.dmg release/ 2>/dev/null || true
+          cp artifacts/linux/*.AppImage artifacts/linux/*.deb release/
+          ls -lh release
+          python3 - <<'EOF'
+          import json
+          j = json.load(open('version.json', encoding='utf-8'))
+          body = f"## v{j['version']} 更新內容\n\n" + "\n".join(f"- {n}" for n in j['notes']) + "\n\n" + open('desktop/RELEASE_NOTES.md', encoding='utf-8').read()
+          open('release-body.md', 'w', encoding='utf-8').write(body)
+          EOF
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check.outputs.ver }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          name: 小柯機器人螢幕錄製工具 v${{ needs.check.outputs.ver }}
+          body_path: release-body.md
+          files: release/*
