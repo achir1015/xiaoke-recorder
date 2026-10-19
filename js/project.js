@@ -25,6 +25,11 @@ export function defaultEdit() {
     outro: null,        // 片尾 {id:'outro0', dur, title, sub, accent}
     music: null,        // 背景配樂 {id:'mu_happy0', volume, fadeIn, fadeOut}
     transition: defaultTransition(),   // 轉場（剪掉接點、片頭、片尾）
+    // 多軌：影片 2（插入其他影片：子母畫面或全畫面）、背景音樂軌、錄音（旁白）軌
+    // 位置以錄影原始時間記錄（和註解一樣跟著內容走），播放時從開始點連續播放
+    v2: [],             // {id,start,end,blobKey,name,offset,mode:'pip'|'full',x,y,size,volume,mute}
+    musicClips: [],     // {id,start,end,src:'lib'|'file',musicId,blobKey,name,offset,volume,fadeIn,fadeOut,loop}
+    voice: [],          // {id,start,end,blobKey,name,offset,volume}
   };
 }
 
@@ -101,6 +106,7 @@ export function blobKeys(p) {
   for (const s of Object.values(p.sources || {})) if (s?.blobKey) keys.add(s.blobKey);
   if (p.edit?.background?.image?.blobKey) keys.add(p.edit.background.image.blobKey);
   for (const a of p.edit?.annotations || []) if (a.blobKey) keys.add(a.blobKey);
+  for (const k of ['v2', 'musicClips', 'voice']) for (const c of p.edit?.[k] || []) if (c.blobKey) keys.add(c.blobKey);
   return [...keys];
 }
 
@@ -141,6 +147,7 @@ export async function unpackProject(file) {
   for (const s of Object.values(p.sources || {})) if (s?.blobKey) s.blobKey = remap[s.blobKey];
   if (p.edit?.background?.image?.blobKey) p.edit.background.image.blobKey = remap[p.edit.background.image.blobKey];
   for (const a of p.edit?.annotations || []) if (a.blobKey) a.blobKey = remap[a.blobKey];
+  for (const k of ['v2', 'musicClips', 'voice']) for (const c of p.edit?.[k] || []) if (c.blobKey) c.blobKey = remap[c.blobKey];
   await Store.save(p);
   return p;
 }
@@ -199,5 +206,15 @@ export function partAt(tl, o) {
   const r = o - tl.introD;
   if (r < tl.recOut || !tl.outroD) return { kind: 'rec', lt: r, src: outToSrc(tl.segs, Math.min(r, tl.recOut)) };
   return { kind: 'outro', lt: r - tl.recOut, src: tl.segs.length ? tl.segs[tl.segs.length - 1].s1 - 0.001 : 0 };
+}
+// 多軌片段在輸出影片中的範圍（片段從開始點連續播放，不受剪掉、變速影響）
+export function clipRange(tl, c) {
+  const o0 = tl.introD + srcToOut(tl.segs, c.start), o1 = tl.introD + srcToOut(tl.segs, c.end);
+  return { o0, o1: Math.max(o0, o1) };
+}
+// 在輸出時間 o，片段自己的媒體時間（秒）；不在範圍內回傳 null
+export function clipLocal(tl, c, o) {
+  const { o0, o1 } = clipRange(tl, c);
+  return o >= o0 && o < o1 ? (c.offset || 0) + (o - o0) : null;
 }
 export function isTrimmed(edit, s) { return edit.trims.some(r => s >= r.start && s < r.end); }

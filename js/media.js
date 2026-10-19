@@ -117,28 +117,25 @@ export class MediaSet {
     if (this.buffers[name]) return this.buffers[name];
     const tr = this.audio[name];
     if (!tr) return null;
-    const sink = new AudioBufferSink(tr);
-    const parts = [];
-    let sr = 48000, ch = 1, end = 0;
-    for await (const w of sink.buffers()) {
-      parts.push(w);
-      sr = w.buffer.sampleRate; ch = Math.max(ch, w.buffer.numberOfChannels);
-      end = Math.max(end, w.timestamp + w.duration);
-      if (onProgress && parts.length % 50 === 0) onProgress(end);
-    }
-    if (!parts.length) return null;
-    const len = Math.ceil(end * sr) + 1;
-    const out = new AudioBuffer({ length: len, numberOfChannels: Math.min(ch, 2), sampleRate: sr });
-    for (const w of parts) {
-      const off = Math.max(0, Math.round(w.timestamp * sr));
-      for (let c = 0; c < out.numberOfChannels; c++) {
-        const src = w.buffer.getChannelData(Math.min(c, w.buffer.numberOfChannels - 1));
-        const n = Math.min(src.length, len - off);
-        if (n > 0) out.getChannelData(c).set(n === src.length ? src : src.subarray(0, n), off);
-      }
-    }
-    this.buffers[name] = out;
+    const out = await decodeTrack(tr, onProgress);
+    if (out) this.buffers[name] = out;
     return out;
+  }
+
+  // ---- 多軌片段的媒體（影片 2、匯入的音樂、錄音）----
+  async clip(key) {
+    this.clips ||= new Map();
+    if (!this.clips.has(key)) this.clips.set(key, (async () => {
+      const inp = await this._input(key);
+      const v = await inp.getPrimaryVideoTrack().catch(() => null), a = await inp.getPrimaryAudioTrack().catch(() => null);
+      return { v, a, dur: await inp.computeDuration(), w: v ? await v.getDisplayWidth() : 0, h: v ? await v.getDisplayHeight() : 0 };
+    })());
+    return this.clips.get(key);
+  }
+  async clipAudio(key) {
+    this.clipBufs ||= new Map();
+    if (!this.clipBufs.has(key)) this.clipBufs.set(key, (async () => { const c = await this.clip(key); return c.a ? decodeTrack(c.a) : null; })().catch(() => null));
+    return this.clipBufs.get(key);
   }
 
   // 時間軸縮圖
@@ -169,6 +166,31 @@ export class MediaSet {
     for (const i of this.inputs.values()) try { i.dispose?.(); } catch { }
     this.inputs.clear();
   }
+}
+
+// 把一條音訊軌解碼成一個 AudioBuffer
+export async function decodeTrack(tr, onProgress) {
+  const sink = new AudioBufferSink(tr);
+  const parts = [];
+  let sr = 48000, ch = 1, end = 0;
+  for await (const w of sink.buffers()) {
+    parts.push(w);
+    sr = w.buffer.sampleRate; ch = Math.max(ch, w.buffer.numberOfChannels);
+    end = Math.max(end, w.timestamp + w.duration);
+    if (onProgress && parts.length % 50 === 0) onProgress(end);
+  }
+  if (!parts.length) return null;
+  const len = Math.ceil(end * sr) + 1;
+  const out = new AudioBuffer({ length: len, numberOfChannels: Math.min(ch, 2), sampleRate: sr });
+  for (const w of parts) {
+    const off = Math.max(0, Math.round(w.timestamp * sr));
+    for (let c = 0; c < out.numberOfChannels; c++) {
+      const src = w.buffer.getChannelData(Math.min(c, w.buffer.numberOfChannels - 1));
+      const n = Math.min(src.length, len - off);
+      if (n > 0) out.getChannelData(c).set(n === src.length ? src : src.subarray(0, n), off);
+    }
+  }
+  return out;
 }
 
 // 波形：每 binSec 秒取最大振幅（0..1）

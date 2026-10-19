@@ -116,9 +116,9 @@ textarea { resize: vertical; min-height: 60px; }
 .stage-inner { position: absolute; inset: 14px; display: grid; place-items: center; overflow: hidden; }
 .stage canvas { display: block; border-radius: 6px; box-shadow: 0 6px 40px #0009; touch-action: none; }
 .side { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-.tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; flex: none; }
+.tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); flex: none; }
 .tabs::-webkit-scrollbar { display: none; }
-.tabs button { flex: 1 0 auto; border: 0; background: none; padding: 10px 10px 8px; color: var(--dim); display: grid; justify-items: center; gap: 2px; font-size: 11px; min-width: 52px; }
+.tabs button { flex: 1 0 16%; border: 0; background: none; padding: 8px 4px 6px; color: var(--dim); display: grid; justify-items: center; gap: 2px; font-size: 11px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tabs button.on { color: #fff; box-shadow: inset 0 -2px 0 var(--acc); }
 .tabs .ico { width: 20px; height: 20px; }
 .panel { flex: 1; overflow: auto; padding: 4px 14px 20px; }
@@ -135,11 +135,11 @@ textarea { resize: vertical; min-height: 60px; }
 .cap-item textarea { min-height: 34px; padding: 4px 6px; }
 
 /* ---- 時間軸 ---- */
-.tl { grid-column: 1 / -1; border-top: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; height: 280px; padding-bottom: var(--safe-b); }
+.tl { grid-column: 1 / -1; border-top: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; height: 330px; padding-bottom: var(--safe-b); }
 .transport { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .transport .time { font: 500 13px ui-monospace, Menlo, monospace; min-width: 120px; color: var(--dim); white-space: nowrap; flex: none; }
 .transport .time b { color: #fff; font-weight: 500; }
-.tl-body { flex: 1; display: grid; grid-template-columns: 92px 1fr; min-height: 0; overflow: hidden; }
+.tl-body { flex: 1; display: grid; grid-template-columns: 92px 1fr; min-height: 0; overflow-x: hidden; overflow-y: auto; align-items: start; }
 .tl-heads { border-right: 1px solid var(--line); padding-top: 24px; }
 .tl-head { height: var(--row, 34px); display: flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 12px; color: var(--dim); border-bottom: 1px solid #20242d; }
 .tl-head .ico { width: 15px; height: 15px; }
@@ -167,6 +167,12 @@ textarea { resize: vertical; min-height: 60px; }
 .rg.ann { background: linear-gradient(90deg, #0e7490, #0891b2); }
 .rg.ann.blur { background: linear-gradient(90deg, #475569, #64748b); }
 .rg.cap { background: linear-gradient(90deg, #15803d, #16a34a); }
+.rg.v2 { background: linear-gradient(90deg, #be185d, #db2777); }
+.rg.v2.muted { opacity: .75; }
+.rg.mus { background: linear-gradient(90deg, #7c3aed, #a855f7); }
+.rg.mus.whole { opacity: .35; cursor: pointer; z-index: 0; }
+.rg.voice { background: linear-gradient(90deg, #b45309, #ea580c); }
+.btn.rec .vrec-t { font-variant-numeric: tabular-nums; }
 .trim-shade { position: absolute; top: 0; bottom: 0; background: #000a; pointer-events: none; border-left: 1px dashed #f55; border-right: 1px dashed #f55; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--acc); z-index: 5; pointer-events: none; }
 .playhead::before { content: ''; position: absolute; top: 0; left: -6px; border: 7px solid transparent; border-top: 9px solid var(--acc); }

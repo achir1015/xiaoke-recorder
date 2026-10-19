@@ -46,6 +46,33 @@ function draw3DText(ctx, lines, cx, cy, fs, d3, lt, font) {
   ctx.restore();
   return { w: Math.max(...widths, fs), h: total };
 }
+// 影片 2：overlays = [{ clip, frame }]；回傳每個子母畫面的位置（預覽時可拖曳）
+export function drawOverlays(ctx, W, H, overlays) {
+  const boxes = [];
+  for (const { clip: c, frame } of overlays) {
+    if (!frame) continue;
+    const fw = frame.displayWidth, fh = frame.displayHeight;
+    ctx.save();
+    if (c.mode === 'full') {
+      // 全畫面：以 contain 方式置中，四周補黑
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+      const k = Math.min(W / fw, H / fh), w = fw * k, h = fh * k;
+      frame.draw(ctx, (W - w) / 2, (H - h) / 2, w, h);
+    } else {
+      const w = (c.size || 35) / 100 * W, h = w * fh / fw;
+      const x = clamp((c.x ?? .75) * W - w / 2, 4, W - w - 4), y = clamp((c.y ?? .25) * H - h / 2, 4, H - h - 4), r = Math.min(w, h) * .06;
+      ctx.shadowColor = 'rgba(0,0,0,.45)'; ctx.shadowBlur = w * .05; ctx.shadowOffsetY = w * .015;
+      ctx.fillStyle = '#000'; roundRectPath(ctx, x, y, w, h, r); ctx.fill();
+      ctx.shadowColor = 'transparent';
+      roundRectPath(ctx, x, y, w, h, r); ctx.clip();
+      frame.draw(ctx, x, y, w, h);
+      boxes.push({ clip: c, x, y, w, h });
+    }
+    ctx.restore();
+  }
+  return boxes;
+}
+
 // 片頭／片尾畫面
 export function renderTemplate(ctx, W, H, clip, lt) {
   const tpl = LIB.TPL[clip.id];

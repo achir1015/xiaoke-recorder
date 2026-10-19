@@ -3,7 +3,7 @@
 //  桌面版：問 Python 去 GitHub Releases 查最新版，一鍵下載安裝並自動重開
 import { Desktop } from './desktop.js';
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 
 export async function checkWebUpdate() {
   try {

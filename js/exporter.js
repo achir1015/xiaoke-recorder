@@ -4,9 +4,9 @@ import {
   getFirstEncodableVideoCodec, getFirstEncodableAudioCodec,
 } from '../vendor/mediabunny.min.mjs';
 import { GIFEncoder, quantize, applyPalette } from '../vendor/gifenc.esm.js';
-import { buildSegments, outputDuration, outToSrc, buildTimeline, partAt } from './project.js';
-import { render, outputSize, renderTemplate } from './compositor.js';
-import { getMusicBuffer, scheduleMusic } from './assets.js';
+import { buildSegments, outputDuration, outToSrc, buildTimeline, partAt, clipRange } from './project.js';
+import { render, outputSize, renderTemplate, drawOverlays } from './compositor.js';
+import { getMusicBuffer, scheduleMusic, scheduleClip } from './assets.js';
 import { transitionPoints, transitionAt, drawTransition } from './transitions.js';
 
 // 把一個 AudioBuffer 依照剪輯片段排進 AudioContext（預覽與匯出共用）
@@ -41,11 +41,17 @@ export async function mixAudio(project, media, tl) {
     if (buf) list.push([buf, a[name]]);
   }
   const music = project.edit.music ? await getMusicBuffer(project.edit.music.id).catch(() => null) : null;
-  if ((!list.length && !music) || dur <= 0) return null;
+  // 多軌片段的聲音：影片 2、音樂軌、錄音軌
+  const clipBufs = [];
+  const e = project.edit;
+  for (const c of [...(e.v2 || []), ...(e.voice || [])]) { const b = await media.clipAudio(c.blobKey); if (b) clipBufs.push([b, c]); }
+  for (const c of e.musicClips || []) { const b = c.src === 'lib' ? await getMusicBuffer(c.musicId).catch(() => null) : await media.clipAudio(c.blobKey); if (b) clipBufs.push([b, c]); }
+  if ((!list.length && !music && !clipBufs.length) || dur <= 0) return null;
   const sr = 48000;
   const off = new OfflineAudioContext(2, Math.ceil(dur * sr) + 1, sr);
   for (const [buf, gain] of list) scheduleAudio(off, off.destination, buf, gain, tl.segs, 0, tl.introD);
   if (music) scheduleMusic(off, off.destination, music, project.edit.music, dur, 0, 0);
+  for (const [buf, c] of clipBufs) { const { o0, o1 } = clipRange(tl, c); scheduleClip(off, off.destination, buf, c, o0, o1, 0, 0); }
   return off.startRendering();
 }
 
@@ -94,6 +100,27 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     return fzCache.get(key);
   };
   // 畫第 i 格：片頭／片尾用範本，錄影用合成器
+  // 影片 2：每個片段一個連續解碼器（輸出時間遞增，片段內的媒體時間也遞增）
+  const v2s = [];
+  for (const c of ed.v2 || []) {
+    const m = await media.clip(c.blobKey).catch(() => null);
+    if (!m?.v) continue;
+    const { o0, o1 } = clipRange(tl, c);
+    const idx = [], local = [];
+    for (let i = 0; i < N; i++) { const o = i / fps; if (o >= o0 && o < o1) { idx.push(i); local.push((c.offset || 0) + (o - o0)); } }
+    if (!idx.length) continue;
+    v2s.push({ c, first: idx[0], last: idx[idx.length - 1], it: new VideoSampleSink(m.v).samplesAtTimestamps(local), cur: null });
+  }
+  const overlaysAt = async i => {
+    const out = [];
+    for (const o of v2s) {
+      if (i < o.first || i > o.last) continue;
+      const r = await o.it.next();
+      if (r.value) { o.cur?.close(); o.cur = r.value; }
+      out.push({ clip: o.c, frame: o.cur });
+    }
+    return out;
+  };
   const drawPart = async (g, p, live, o) => {
     if (p.kind !== 'rec') { renderTemplate(g, W, H, p.kind === 'intro' ? ed.intro : ed.outro, p.lt); return; }
     const scr = live ? cur.screen : await frozen('screen', p.src), cam = live ? cur.camera : await frozen('camera', p.src);
@@ -103,12 +130,14 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     const p = parts[i], o = i / fps;
     if (p.kind === 'rec') await nextFrames();   // 連續解碼的影片一定要往前推進一格
     const tr = transitionAt(tpts, o);
-    if (!tr) { await drawPart(ctx, p, true, o); return; }
+    const ov = await overlaysAt(i);
+    if (!tr) { await drawPart(ctx, p, true, o); if (ov.length) drawOverlays(ctx, W, H, ov); return; }
     const A = partAt(tl, Math.min(o, tr.T - 1e-3)), B = partAt(tl, Math.max(o, tr.T + 1e-3));
     const liveA = p.kind === 'rec' && A.kind === 'rec' && Math.abs(A.src - p.src) < 1e-3, liveB = p.kind === 'rec' && B.kind === 'rec' && Math.abs(B.src - p.src) < 1e-3;
     await drawPart(LA.getContext('2d'), A, liveA, o);
     await drawPart(LB.getContext('2d'), B, liveB, o);
     drawTransition(ctx, LA, LB, tr.type, tr.p, W, H);
+    if (ov.length) drawOverlays(ctx, W, H, ov);
   };
   const cur = {};
   const nextFrames = async () => {
@@ -118,7 +147,7 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     }
   };
   const cleanup = () => { for (const it of Object.values(iters)) it.return?.(); for (const s of Object.values(cur)) s?.close(); };
-  const cleanupFz = () => { for (const s of fzCache?.values?.() || []) s?.close(); };
+  const cleanupFz = () => { for (const s of fzCache?.values?.() || []) s?.close(); for (const o of v2s) { o.it?.return?.(); o.cur?.close(); } };
 
   try {
     if (opts.format === 'gif') {

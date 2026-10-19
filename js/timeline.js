@@ -7,12 +7,25 @@ import { Shortcuts } from './shortcuts.js';
 
 const ROWS = [
   { key: 'video', icon: 'screen', kind: 'trim' },
+  { key: 'v2', icon: 'pip', kind: 'v2' },          // 影片 2
   { key: 'zoom', icon: 'zoom', kind: 'zoom' },
   { key: 'speed', icon: 'speed', kind: 'speed' },
   { key: 'ann', icon: 'text', kind: 'ann' },
   { key: 'cap', icon: 'captions', kind: 'cap' },
+  { key: 'music', icon: 'speaker', kind: 'mus' },  // 背景音樂軌
+  { key: 'voice', icon: 'mic', kind: 'voice' },    // 錄音（旁白）軌
   { key: 'audio', icon: 'audio' },
 ];
+// 可以重疊的列：重疊時上下分層顯示
+function laneRegions(tl, row, list, kind, label, extra) {
+  const lanes = assignLanes(list), n = Math.max(1, ...[...lanes.values()].map(v => v + 1));
+  for (const c of list) {
+    const el = tl.region(c, kind, label(c), typeof extra === 'function' ? extra(c) : extra || '');
+    const ln = lanes.get(c.id) || 0;
+    el.style.top = `calc(${(ln / n) * 100}% + 2px)`; el.style.bottom = 'auto'; el.style.height = `calc(${100 / n}% - 4px)`;
+    row.append(el);
+  }
+}
 const EXCLUSIVE = new Set(['zoom', 'trim', 'speed']); // 同一列不能重疊
 
 export class Timeline {
@@ -41,6 +54,7 @@ export class Timeline {
       q('speed', t('addSpeed') + ' (' + Shortcuts.label(Shortcuts.map.addSpeed) + ')', () => E.addRegion('speed', 3, { rate: 2 })),
       q('text', t('ann_text') + ' (' + Shortcuts.label(Shortcuts.map.addText) + ')', () => E.addAnnotation('text')),
       q('trash', t('delete'), () => E.deleteSel()),
+      this.voiceBtn = h('button', { class: 'btn ghost', title: t('quickVoice'), onclick: () => E.toggleVoiceRec() }, ic('mic'), h('span', { class: 'vrec-t hidden' })),
       h('span', { style: { width: '8px' } }),
       q('plus', t('sc_timelineIn'), () => this.zoomBy(1.5)),
       h('button', { class: 'btn icon ghost', title: t('sc_timelineOut'), onclick: () => this.zoomBy(1 / 1.5) }, h('span', { style: { fontSize: '20px', lineHeight: 1 } }, '−')),
@@ -109,6 +123,15 @@ export class Timeline {
           el.style.top = `calc(${(ln / n) * 100}% + 2px)`; el.style.bottom = 'auto'; el.style.height = `calc(${100 / n}% - 4px)`;
           row.append(el);
         }
+      } else if (r.key === 'v2') {
+        laneRegions(this, row, ed.v2 || [], 'v2', c => (c.mode === 'full' ? '▣ ' : '◳ ') + (c.name || t('row_v2')), c => c.mute ? 'muted' : '');
+      } else if (r.key === 'music') {
+        if (ed.music) {   // 全片背景音樂（含片頭片尾）：整列顯示，點一下到素材庫調整
+          row.append(h('div', { class: 'rg mus whole', style: { left: '0px', width: this.x(this.dur) + 'px' }, title: t('wholeVideoMusic'), onpointerdown: ev => { ev.stopPropagation(); this.E.tab = 'library'; this.E._libCat = 'music'; this.E.renderTabs(); this.E.renderPanel(); } }, '♪ ' + t('wholeVideoMusic')));
+        }
+        laneRegions(this, row, ed.musicClips || [], 'mus', c => '♪ ' + (c.name || ''));
+      } else if (r.key === 'voice') {
+        laneRegions(this, row, ed.voice || [], 'voice', c => '🎙 ' + (c.name || ''));
       } else if (r.key === 'cap') {
         for (const c of ed.captions) row.append(this.region(c, 'cap', c.text));
       } else if (r.key === 'audio') {

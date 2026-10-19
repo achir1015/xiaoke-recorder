@@ -826,6 +826,10 @@ class SelfTest:
         E.applyPreset(LIB.TEXT_PRESETS.find(p => p.id === 'td3'), ed.captionStyle, true);
         ed.transition = { type: 'iris', dur: .6, cuts: true, intro: true, outro: true };
         if (ed.trims[0]) ed.trims[0].trans = 'pushLeft';
+        // 多軌：影片 2（用測試錄影本身）、背景音樂軌
+        E.pushClip('v2', { id: 'st_v2', start: .2, end: 1.4, blobKey: E.p.sources.screen.blobKey, name: 'v2', offset: .5, mode: 'pip', x: .78, y: .26, size: 34, volume: .5, mute: false });
+        E.player.seek(.1); E.addMusicClip('mu_inst0');
+        if (ed.v2.length !== 1 || ed.musicClips.length !== 1) throw new Error('多軌片段沒有加入');
         E.change({ structural: true, panel: true });
         const counts = `片頭${Object.keys(LIB.TPL).filter(k => k.startsWith('intro')).length} 片尾${Object.keys(LIB.TPL).filter(k => k.startsWith('outro')).length} 貼圖${LIB.STK.length} 特效${LIB.GS.length} 配樂${LIB.MUSIC_LIST.length} 樣式${LIB.TEXT_PRESETS.length}`;
         if (LIB.MUSIC_LIST.length !== 110 || LIB.STK.length !== 30 || LIB.GS.length !== 20 || LIB.TEXT_PRESETS.length !== 12) throw new Error(counts);

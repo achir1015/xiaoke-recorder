@@ -2,9 +2,10 @@
 import { $, h, uid, clamp, fmtTime, fmtBytes, download, pickFile, roundRectPath, isTouch } from './util.js';
 import { ic } from './icons.js';
 import { t, getLang } from './i18n.js';
-import { Store, defaultEdit, srcToOut } from './project.js';
+import { Store, defaultEdit, srcToOut, outToSrc } from './project.js';
 import { MediaSet, computePeaks } from './media.js';
 import { CursorTrack, CURSOR_THEMES } from './cursor.js';
+import { VoiceRecorder } from './recorder.js';
 import { WALLPAPERS, GRADIENTS, SOLIDS, ASPECTS, FONTS, outputSize, viewAt, stickerCanvas } from './compositor.js';
 import * as LIB from './library.js';
 import { getMusicBuffer, musicInfo, musicReady } from './assets.js';
@@ -52,7 +53,7 @@ export async function openEditor(p) {
 
 const TABS = [
   ['cut', 'scissors'], ['bg', 'bg'], ['frame', 'crop'], ['zoom', 'zoom'], ['cursor', 'cursor'],
-  ['camera', 'camera'], ['annotate', 'text'], ['library', 'layers'], ['captions', 'captions'], ['audio', 'audio'],
+  ['camera', 'camera'], ['annotate', 'text'], ['library', 'layers'], ['tracks', 'pip'], ['captions', 'captions'], ['audio', 'audio'],
 ];
 
 class Editor {
@@ -181,13 +182,13 @@ class Editor {
   }
 
   // ---------- 選取 ----------
-  listFor(kind) { const e = this.p.edit; return { zoom: e.zooms, trim: e.trims, speed: e.speeds, ann: e.annotations, cap: e.captions }[kind]; }
+  listFor(kind) { const e = this.p.edit; e.v2 ||= []; e.musicClips ||= []; e.voice ||= []; return { zoom: e.zooms, trim: e.trims, speed: e.speeds, ann: e.annotations, cap: e.captions, v2: e.v2, mus: e.musicClips, voice: e.voice }[kind]; }
   findSel() { return this.sel ? this.listFor(this.sel.kind)?.find(x => x.id === this.sel.id) : null; }
   select(kind, id, { seek = false, tab = true } = {}) {
     this.sel = kind ? { kind, id } : null;
     this.player.sel = id || null;
     const it = this.findSel();
-    if (tab && it) this.tab = { zoom: 'zoom', trim: 'cut', speed: 'cut', ann: 'annotate', cap: 'captions' }[kind];
+    if (tab && it) this.tab = { zoom: 'zoom', trim: 'cut', speed: 'cut', ann: 'annotate', cap: 'captions', v2: 'tracks', mus: 'tracks', voice: 'tracks' }[kind];
     if (seek && it && (this.player.t < it.start || this.player.t >= it.end)) this.player.seek(it.start + 0.01);
     this.renderTabs();
     this.renderPanel();
@@ -286,6 +287,13 @@ class Editor {
         drag = { type: 'crop', u0: c.u, v0: c.v };
         return;
       }
+      // 影片 2 的子母畫面：拖曳移動
+      const vb = (L.v2Boxes || []).slice().reverse().find(b => pt.x >= b.x && pt.x <= b.x + b.w && pt.y >= b.y && pt.y <= b.y + b.h);
+      if (vb) {
+        if (this.sel?.id !== vb.clip.id) this.select('v2', vb.clip.id);
+        drag = { type: 'v2', c: vb.clip, dx: pt.x - (vb.x + vb.w / 2), dy: pt.y - (vb.y + vb.h / 2) };
+        return;
+      }
       // 選取中的註解：控制點
       const sel = this.findSel();
       if (sel && this.sel.kind === 'ann') {
@@ -346,6 +354,8 @@ class Editor {
         if (drag.type === 'arrow1') { drag.a.x = c.u; drag.a.y = c.v; } else { drag.a.x2 = c.u; drag.a.y2 = c.v; }
       } else if (drag.type === 'camera') {
         ed.camera.x = clamp((pt.x - drag.dx) / L.pw, 0, 1); ed.camera.y = clamp((pt.y - drag.dy) / L.ph, 0, 1);
+      } else if (drag.type === 'v2') {
+        drag.c.x = clamp((pt.x - drag.dx) / L.pw, 0, 1); drag.c.y = clamp((pt.y - drag.dy) / L.ph, 0, 1);
       } else if (drag.type === 'zoomfocus') {
         this.setZoomFocus(drag.z, pt);
       } else if (drag.type === 'crop') {
@@ -757,6 +767,9 @@ class Editor {
 
   panel_audio(el) {
     const a = this.p.edit.audio;
+    el.append(h('div', { class: 'row wrap', style: { margin: '10px 0' } },
+      h('button', { class: 'btn', onclick: () => { this.tab = 'library'; this._libCat = 'music'; this.renderTabs(); this.renderPanel(); } }, ic('speaker'), t('lib_music')),
+      h('button', { class: 'btn', onclick: () => { this.tab = 'tracks'; this.renderTabs(); this.renderPanel(); } }, ic('mic'), t('voiceRecord'))));
     const any = this.media.audio.mic || this.media.audio.sys;
     if (!any) { el.append(h('div', { class: 'note', style: { marginTop: '12px' } }, t('noAudio'))); return; }
     const restart = () => { if (this.player.playing) { this.player.pause(); this.player.play(); } };
@@ -767,8 +780,8 @@ class Editor {
 
   // ================= 素材庫（來自小柯影音剪輯助手）=================
   panel_library(el) {
-    this._libCat ||= 'text';
-    const cats = [['text', 'lib_text'], ['sticker', 'lib_sticker'], ['effect', 'lib_effect'], ['transition', 'transitions'], ['intro', 'lib_intro'], ['outro', 'lib_outro'], ['music', 'lib_music'], ['bg', 'lib_bg']];
+    this._libCat ||= 'music';
+    const cats = [['music', 'lib_music'], ['text', 'lib_text'], ['sticker', 'lib_sticker'], ['effect', 'lib_effect'], ['transition', 'transitions'], ['intro', 'lib_intro'], ['outro', 'lib_outro'], ['bg', 'lib_bg']];
     el.append(h('p', { class: 'small dim' }, t('libHelp')),
       h('div', { class: 'seg', style: { marginBottom: '8px' } }, cats.map(([k, key]) => h('button', { class: this._libCat === k ? 'on' : '', onclick: () => { this._libCat = k; this.renderPanel(); } }, t(key)))));
     this['lib_' + this._libCat](el);
@@ -882,11 +895,13 @@ class Editor {
         h('button', { class: 'btn danger', onclick: () => { e.music = null; this.stopMusicPreview(); this.change({ structural: true, panel: true }); } }, ic('trash'), t('removeIt')));
     } else el.append(h('p', { class: 'small dim' }, t('musicNone')));
     this._musicCat ||= 'happy';
+    el.append(h('button', { class: 'btn sm', style: { marginTop: '8px' }, onclick: () => this.addClipFromFile('music') }, ic('upload'), t('addMusicFile')));
     el.append(h('h3', {}, t('chooseMusic')), h('div', { class: 'seg', style: { marginBottom: '6px' } }, LIB.MUSIC_CATS.map(([k]) => h('button', { class: this._musicCat === k ? 'on' : '', onclick: () => { this._musicCat = k; this.renderPanel(); } }, t('music_' + k)))));
     el.append(h('div', { class: 'list' }, LIB.MUSIC_LIST.filter(x => x.cat === this._musicCat).map(x => h('div', { class: 'item' + (m?.id === x.id ? ' on' : '') },
       h('button', { class: 'btn icon sm ghost', title: t('previewIt'), onclick: ev => this.previewMusic(x.id, ev.currentTarget) }, this._pvId === x.id ? '■' : '▶'),
       h('span', { class: 'grow' }, '♪ ' + x.name), h('span', { class: 't' }, fmtTime(x.dur, false)),
-      h('button', { class: 'btn sm', onclick: () => { e.music = { id: x.id, volume: m?.volume ?? 0.35, fadeIn: m?.fadeIn ?? 1, fadeOut: m?.fadeOut ?? 2 }; this.stopMusicPreview(); this.change({ structural: true, panel: true }); toast(t('musicRendering')); getMusicBuffer(x.id).then(() => this.tab === 'library' && this.renderPanel()); } }, t('musicUse'))))));
+      h('button', { class: 'btn sm', title: t('wholeVideoMusic'), onclick: () => { e.music = { id: x.id, volume: m?.volume ?? 0.35, fadeIn: m?.fadeIn ?? 1, fadeOut: m?.fadeOut ?? 2 }; this.stopMusicPreview(); this.change({ structural: true, panel: true }); toast(t('musicRendering')); getMusicBuffer(x.id).then(() => this.tab === 'library' && this.renderPanel()); } }, t('musicUse')),
+      h('button', { class: 'btn sm', title: t('addToMusicTrack'), onclick: () => { this.stopMusicPreview(); this.addMusicClip(x.id); } }, '＋' + t('row_music'))))));
   }
   async previewMusic(id, btn) {
     if (this._pvId === id) { this.stopMusicPreview(); this.renderPanel(); return; }
@@ -928,6 +943,120 @@ class Editor {
       this.toggleRow(t('transAtCuts'), tr, 'cuts', { structural: true }),
       this.toggleRow(t('transAtIntro'), tr, 'intro', { structural: true }),
       this.toggleRow(t('transAtOutro'), tr, 'outro', { structural: true }));
+  }
+
+
+  // ================= 多軌：影片 2、背景音樂軌、錄音（旁白）軌 =================
+  panel_tracks(el) {
+    const e = this.p.edit, s = this.findSel(), k = this.sel?.kind;
+    el.append(h('p', { class: 'small dim' }, t('tracksHelp')));
+    const clipList = (list, kind, icon) => list.length ? h('div', { class: 'list', style: { marginTop: '6px' } }, list.map(c => h('div', { class: 'item' + (this.sel?.id === c.id ? ' on' : ''), onclick: () => this.select(kind, c.id, { seek: true }) },
+      h('span', {}, icon), h('span', { class: 'grow', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.name || ''), h('span', { class: 't' }, fmtTime(c.start) + '–' + fmtTime(c.end))))) : null;
+    const volume = c => this.slider(t('clipVolume'), c, 'volume', 0, 2, 0.01, { fmt: v => Math.round(v * 100) + '%', onchange: () => this.restartAudio() });
+    const offset = c => h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('clipStartAt')), h('input', { type: 'number', min: 0, step: 0.1, value: (c.offset || 0).toFixed(1), onchange: ev => { c.offset = Math.max(0, +ev.target.value || 0); this.change({}); this.restartAudio(); } }));
+
+    // ---- 影片 2 ----
+    el.append(h('h3', {}, '◳ ' + t('row_v2')), h('p', { class: 'small dim' }, t('v2Help')),
+      h('button', { class: 'btn', onclick: () => this.addClipFromFile('v2') }, ic('upload'), t('addVideo2')), clipList(e.v2, 'v2', '◳'));
+    if (s && k === 'v2') {
+      el.append(h('div', { class: 'card', style: { padding: '10px', marginTop: '8px' } },
+        this.timeFields(s, false),
+        this.segRow(t('v2Mode'), s, 'mode', [['pip', t('v2Pip')], ['full', t('v2Full')]]),
+        s.mode === 'full' ? null : this.slider(t('v2Size'), s, 'size', 10, 80, 1, { fmt: v => v + '%' }),
+        s.mode === 'full' ? null : h('div', { class: 'row wrap' }, [['↖', .2, .22], ['↗', .8, .22], ['↙', .2, .78], ['↘', .8, .78], ['⊙', .5, .5]].map(([l, x, y]) => h('button', { class: 'btn icon', onclick: () => { s.x = x; s.y = y; this.change({ timeline: false }); } }, l))),
+        volume(s), this.toggleRow(t('mute'), s, 'mute', { onchange: () => this.restartAudio() }), offset(s), this.delBtn()));
+    }
+    // ---- 背景音樂軌 ----
+    el.append(h('h3', {}, '♪ ' + t('row_music')), h('p', { class: 'small dim' }, t('musicTrackHelp')),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn', onclick: () => { this.tab = 'library'; this._libCat = 'music'; this.renderTabs(); this.renderPanel(); } }, ic('layers'), t('fromLibrary')),
+        h('button', { class: 'btn', onclick: () => this.addClipFromFile('music') }, ic('upload'), t('addMusicFile'))),
+      clipList(e.musicClips, 'mus', '♪'));
+    if (s && k === 'mus') {
+      el.append(h('div', { class: 'card', style: { padding: '10px', marginTop: '8px' } },
+        this.timeFields(s, false), volume(s),
+        this.slider(t('fadeIn'), s, 'fadeIn', 0, 6, 0.1, { fmt: v => v + 's', onchange: () => this.restartAudio() }),
+        this.slider(t('fadeOut'), s, 'fadeOut', 0, 8, 0.1, { fmt: v => v + 's', onchange: () => this.restartAudio() }),
+        this.toggleRow(t('musicLoop'), s, 'loop', { onchange: () => this.restartAudio() }), offset(s), this.delBtn()));
+    }
+    // ---- 錄音（旁白）軌 ----
+    el.append(h('h3', {}, '🎙 ' + t('row_voice')), h('p', { class: 'small dim' }, t('voiceHelp')));
+    const micSel = h('select', { onchange: ev => { this._voiceMic = ev.target.value; } }, h('option', { value: '' }, t('defaultMic')));
+    navigator.mediaDevices?.enumerateDevices?.().then(ds => { for (const d of ds.filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default')) micSel.append(h('option', { value: d.deviceId, selected: d.deviceId === this._voiceMic }, d.label || t('mic'))); }).catch(() => { });
+    el.append(h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('chooseMic')), micSel),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn ' + (this._vrec ? 'rec' : 'pri'), onclick: () => this.toggleVoiceRec() }, ic(this._vrec ? 'stop' : 'mic'), this._vrec ? t('voiceStop') : t('voiceRecord')),
+        h('button', { class: 'btn', onclick: () => this.addClipFromFile('voice') }, ic('upload'), t('addVoiceFile'))),
+      h('div', { class: 'note small', style: { marginTop: '6px' } }, t('headphonesTip')),
+      clipList(e.voice, 'voice', '🎙'));
+    if (s && k === 'voice') el.append(h('div', { class: 'card', style: { padding: '10px', marginTop: '8px' } }, this.timeFields(s, false), volume(s), offset(s), this.delBtn()));
+  }
+  restartAudio() { clearTimeout(this._ra); this._ra = setTimeout(() => { if (this.player.playing) { this.player.pause(); this.player.play(); } }, 200); }
+  // 片段長度（輸出秒數）換成時間軸上的結束點
+  endFor(start, dur) {
+    const segs = this.player.segs;
+    return Math.min(this.p.duration, outToSrc(segs, srcToOut(segs, start) + dur));
+  }
+  async addClipFromFile(kind) {
+    const f = await pickFile(kind === 'v2' ? 'video/*,.mp4,.mov,.webm,.mkv' : 'audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,video/*');
+    if (!f) return;
+    const key = 'b_' + uid() + uid();
+    await Store.putBlob(key, f);
+    let m;
+    try { m = await this.media.clip(key); } catch (err) { toast(t('openFailed') + ' ' + (err.message || err), true); return; }
+    if (kind === 'v2' && !m.v) { toast(t('openFailed'), true); return; }
+    const start = clamp(this.player.t, 0, Math.max(0, this.p.duration - 0.2));
+    const name = f.name.replace(/\.[^.]+$/, '');
+    const base = { id: uid(), start, end: this.endFor(start, m.dur || 3), blobKey: key, name, offset: 0 };
+    if (kind === 'v2') this.pushClip('v2', { ...base, mode: 'pip', x: .78, y: .26, size: 34, volume: 1, mute: false });
+    else if (kind === 'music') this.pushClip('mus', { ...base, src: 'file', volume: .4, fadeIn: .5, fadeOut: 1.5, loop: false });
+    else this.pushClip('voice', { ...base, volume: 1 });
+  }
+  addMusicClip(musicId) {
+    const info = musicInfo(musicId), start = clamp(this.player.t, 0, Math.max(0, this.p.duration - 0.2));
+    this.pushClip('mus', { id: uid(), start, end: this.p.duration, src: 'lib', musicId, name: info?.name || '', offset: 0, volume: .35, fadeIn: 1, fadeOut: 2, loop: true });
+    toast(t('musicRendering'));
+  }
+  pushClip(kind, c) {
+    this.listFor(kind).push(c);
+    this.sel = { kind, id: c.id }; this.player.sel = c.id;
+    this.tab = 'tracks'; this.renderTabs();
+    this.change({ structural: true, panel: true });
+  }
+  // 錄旁白：從播放頭開始播放影片並同時錄音，再按一次停止，錄音放進錄音軌
+  async toggleVoiceRec() {
+    if (this._vrec) {
+      const vr = this._vrec; this._vrec = null;
+      clearInterval(this._vrecTick);
+      this.player.pause();
+      const { blob, dur } = await vr.stop();
+      this.updateVoiceBtn();
+      if (dur < 0.3 || !blob.size) { this.renderPanel(); return; }
+      const key = 'b_' + uid() + uid();
+      await Store.putBlob(key, blob);
+      const start = this._vrecStart, n = (this.p.edit.voice || []).length + 1;
+      this.pushClip('voice', { id: uid(), start, end: this.endFor(start, dur), blobKey: key, name: t('row_voice') + ' ' + n, offset: 0, volume: 1 });
+      toast(t('voiceSaved'));
+      return;
+    }
+    const vr = new VoiceRecorder();
+    try { await vr.start(this._voiceMic); }
+    catch (err) { toast(t('noMicForVoice') + ' ' + (err.message || ''), true, 5000); return; }
+    this._vrec = vr;
+    this._vrecStart = this.player.t;
+    this.player.play();
+    this._vrecTick = setInterval(() => this.updateVoiceBtn(), 250);
+    this._vrecEnded ||= this.player.on('ended', () => { if (this._vrec) this.toggleVoiceRec(); });
+    this.updateVoiceBtn();
+    if (this.tab === 'tracks') this.renderPanel();
+  }
+  updateVoiceBtn() {
+    const b = this.timeline?.voiceBtn;
+    if (!b) return;
+    const sp = b.querySelector('.vrec-t');
+    b.classList.toggle('rec', !!this._vrec);
+    sp.classList.toggle('hidden', !this._vrec);
+    if (this._vrec) sp.textContent = ' ' + fmtTime(this._vrec.time, false);
   }
 
   // ---------- 其他選單 ----------

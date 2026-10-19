@@ -1,9 +1,10 @@
 // 預覽播放器：解碼影片＋Web Audio 播放聲音，套用剪掉／變速，畫到預覽畫布
 import { Emitter, clamp } from './util.js';
-import { buildTimeline, partAt, srcToOut } from './project.js';
-import { render, outputSize, renderTemplate } from './compositor.js';
+import { buildTimeline, partAt, srcToOut, clipRange, clipLocal } from './project.js';
+import { render, outputSize, renderTemplate, drawOverlays } from './compositor.js';
+import { VideoReader } from './media.js';
 import { scheduleAudio } from './exporter.js';
-import { getMusicBuffer, scheduleMusic } from './assets.js';
+import { getMusicBuffer, scheduleMusic, scheduleClip } from './assets.js';
 import { transitionPoints, transitionAt, drawTransition } from './transitions.js';
 import { VideoSampleSink } from '../vendor/mediabunny.min.mjs';
 
@@ -35,10 +36,57 @@ export class Player extends Emitter {
     this.segs = this.tl.segs;
     this.outDur = this.tl.total;
     this.tpts = transitionPoints(this.project.edit, this.tl);
+    this.loadClips();
     this.o = Math.min(this.o, this.outDur);
     this.loadMusic();
   }
   get outTime() { return this.o; }
+  // ---- 多軌：影片 2、音樂軌、錄音軌 ----
+  clips() {
+    const e = this.project.edit;
+    return [...(e.v2 || []).map(c => ({ kind: 'v2', c })), ...(e.musicClips || []).map(c => ({ kind: 'music', c })), ...(e.voice || []).map(c => ({ kind: 'voice', c }))];
+  }
+  // 先把每個片段的聲音解碼好（播放時直接排程）
+  loadClips() {
+    this.clipBuf ||= new Map();
+    for (const { kind, c } of this.clips()) {
+      const key = kind === 'music' && c.src === 'lib' ? 'lib:' + c.musicId : c.blobKey;
+      if (!key || this.clipBuf.has(key)) continue;
+      this.clipBuf.set(key, null);
+      const p = key.startsWith('lib:') ? getMusicBuffer(c.musicId) : this.media.clipAudio(key);
+      p.then(b => { if (!b) return; this.clipBuf.set(key, b); if (this.playing) { this.pause(); this.play(); } }).catch(() => { });
+    }
+  }
+  clipBuffer(kind, c) { return this.clipBuf?.get(kind === 'music' && c.src === 'lib' ? 'lib:' + c.musicId : c.blobKey) || null; }
+  // 影片 2 的解碼器（每個片段一個）
+  v2Reader(c) {
+    this.v2r ||= new Map();
+    if (!this.v2r.has(c.id)) {
+      const ent = { reader: null };
+      this.v2r.set(c.id, ent);
+      this.media.clip(c.blobKey).then(m => { if (m?.v) { ent.reader = new VideoReader(m.v); const l = clipLocal(this.tl, c, this.o); if (l != null) ent.reader.seek(l).then(() => (this._dirty = true)); } }).catch(() => { });
+    }
+    return this.v2r.get(c.id).reader;
+  }
+  _overlays() {
+    const out = [];
+    for (const c of this.project.edit.v2 || []) {
+      const r = this.v2Reader(c);
+      const local = clipLocal(this.tl, c, this.o);
+      if (!r) continue;
+      if (local == null) { if (r.iter) r.stop(); continue; }
+      let frame;
+      if (this.playing) { if (r.needsRestart(local)) r.play(local); frame = r.update(local); }
+      else frame = r.cur;
+      out.push({ clip: c, frame });
+    }
+    return out;
+  }
+  _drawOverlays(pw, ph) {
+    const ov = this._overlays();
+    const boxes = ov.length ? drawOverlays(this.ctx, pw, ph, ov) : [];
+    if (this.layout) this.layout.v2Boxes = boxes;
+  }
   get part() { return partAt(this.tl, this.o); }
   // 背景配樂先在背景合成好
   loadMusic() {
@@ -73,7 +121,8 @@ export class Player extends Emitter {
   async _seekFrames() {
     if (this.playing) { this.pause(); this.play(); return; }
     const want = this.t;
-    await Promise.all(Object.values(this.readers).filter(Boolean).map(r => r.seek(want)));
+    const v2 = (this.project.edit.v2 || []).map(c => { const r = this.v2Reader(c), l = clipLocal(this.tl, c, this.o); return r && l != null ? r.seek(l) : null; });
+    await Promise.all([...Object.values(this.readers).filter(Boolean).map(r => r.seek(want)), ...v2]);
     this._dirty = true;
     this.emit('time', this.t);
   }
@@ -105,6 +154,12 @@ export class Player extends Emitter {
       }
     }
     if (this.musicBuf && this.project.edit.music) this.audioNodes.push(scheduleMusic(actx, actx.destination, this.musicBuf, this.project.edit.music, this.outDur, o, this._c0));
+    for (const { kind, c } of this.clips()) {
+      const buf = this.clipBuffer(kind, c);
+      if (!buf) continue;
+      const { o0, o1 } = clipRange(this.tl, c);
+      this.audioNodes.push(scheduleClip(actx, actx.destination, buf, c, o0, o1, o, this._c0));
+    }
     this.o = o;
     const s = partAt(this.tl, o).src;
     this.t = s;
@@ -118,6 +173,7 @@ export class Player extends Emitter {
     this.audioNodes.forEach(n => n.stop());
     this.audioNodes = [];
     Object.values(this.readers).forEach(r => r?.stop());
+    for (const e of this.v2r?.values() || []) e.reader?.stop();
     this.emit('pause');
     this.seekOut(this.o);
   }
@@ -163,6 +219,7 @@ export class Player extends Emitter {
       // 片頭／片尾
       renderTemplate(this.ctx, pw, ph, pt.kind === 'intro' ? ed.intro : ed.outro, pt.lt);
       this.layout = null;
+      this._drawOverlays(pw, ph);
       this.emit('drawn', null);
       return;
     }
@@ -174,6 +231,7 @@ export class Player extends Emitter {
       preview: true, sel: this.sel, ot: this.o,
     });
     this.layout.pw = pw; this.layout.ph = ph;
+    this._drawOverlays(pw, ph);
     this.emit('drawn', this.layout);
   }
 
@@ -193,6 +251,7 @@ export class Player extends Emitter {
     draw(this._la, A); draw(this._lb, B);
     drawTransition(this.ctx, this._la, this._lb, tr.type, tr.p, pw, ph);
     this.layout = null;
+    this._drawOverlays(pw, ph);
     this.emit('drawn', null);
   }
   // 轉場時「停住」的那一格（接點前最後一格／接點後第一格）：隨機讀取並快取
@@ -220,6 +279,7 @@ export class Player extends Emitter {
     cancelAnimationFrame(this._raf);
     this.pause();
     Object.values(this.readers).forEach(r => r?.dispose());
+    for (const e of this.v2r?.values() || []) e.reader?.dispose();
     for (const v of this._fz?.values() || []) if (v !== 'loading') v.close?.();
     this.actx?.close().catch(() => { });
   }

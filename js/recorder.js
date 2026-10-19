@@ -98,6 +98,38 @@ export async function pickAudioCodec(list) {
   return await getFirstEncodableAudioCodec(list, { numberOfChannels: 2, sampleRate: 48000 });
 }
 
+// 錄旁白（錄音軌）：只錄麥克風，寫成 MP4（AAC／Opus）
+export class VoiceRecorder {
+  async start(deviceId) {
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const parts = this.parts = [];
+    this.output = new Output({ format: new Mp4OutputFormat({ fastStart: 'fragmented' }), target: new StreamTarget(new WritableStream({ write: c => { parts.push(c.data.slice()); } })) });
+    const codec = await pickAudioCodec(['aac', 'opus']) || 'opus';
+    this.output.addAudioTrack(new MediaStreamAudioTrackSource(this.stream.getAudioTracks()[0], { codec, bitrate: 128e3 }));
+    await this.output.start();
+    this.t0 = performance.now();
+    // 音量表
+    try {
+      this.ac = new AudioContext(); this.an = this.ac.createAnalyser(); this.an.fftSize = 512;
+      this.ac.createMediaStreamSource(this.stream).connect(this.an); this._buf = new Float32Array(512);
+    } catch { }
+  }
+  get time() { return (performance.now() - this.t0) / 1000; }
+  level() { if (!this.an) return 0; this.an.getFloatTimeDomainData(this._buf); let m = 0; for (const v of this._buf) m = Math.max(m, Math.abs(v)); return m; }
+  async stop() {
+    const dur = this.time;
+    try { await this.output.finalize(); } catch (e) { console.warn(e); }
+    this.stream.getTracks().forEach(t => t.stop());
+    this.ac?.close().catch(() => { });
+    return { blob: new Blob(this.parts, { type: 'audio/mp4' }), dur };
+  }
+  async cancel() {
+    try { await this.output?.cancel(); } catch { }
+    this.stream?.getTracks().forEach(t => t.stop());
+    this.ac?.close().catch(() => { });
+  }
+}
+
 function pickBitrate(w, h, fps) {
   return Math.round(Math.min(40e6, Math.max(3e6, w * h * fps * 0.12)));
 }
