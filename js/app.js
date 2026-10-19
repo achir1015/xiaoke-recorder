@@ -147,7 +147,7 @@ export async function showHome() {
   }
   wrap.append(h('div', {}, h('div', { class: 'row', style: { marginBottom: '10px' } }, h('h2', { class: 'grow', style: { margin: 0, fontSize: '18px' } }, t('myRecordings')), h('span', { class: 'small dim', id: 'storage' })),
     list.length ? grid : h('div', { class: 'empty' }, t('noRecordings'))));
-  wrap.append(h('div', { class: 'small dim', style: { textAlign: 'center' } }, `${t('appName')} v${APP_VERSION}${Desktop.info ? ' · ' + t('desktopEdition') + ' ' + Desktop.info.version : ''} · `, h('a', { href: 'https://github.com/achir1015/xiaoke-recorder', target: '_blank', rel: 'noopener' }, 'GitHub')));
+  wrap.append(h('div', { class: 'small dim', style: { textAlign: 'center' } }, `${t('appName')} v${APP_VERSION}${Desktop.info ? ' · ' + t('desktopEdition') + ' ' + Desktop.info.version : ''} · `, h('a', { href: 'https://github.com/achir1015/xiaoke-recorder', target: '_blank', rel: 'noopener' }, 'GitHub'), ' · © 2026 吳玉柱 ', h('a', { href: 'mailto:achir1015@gmail.com' }, 'achir1015@gmail.com')));
   main.append(wrap);
   view.append(main);
   if (my !== navToken) return; // 載入期間使用者已經打開別的畫面
@@ -500,7 +500,7 @@ export async function showSettings() {
 
   // 安裝說明
   body.append(h('h3', {}, t('installApp')), h('div', { class: 'small dim', html: t('installHelp') }));
-  body.append(h('h3', {}, t('about')), h('div', { class: 'small dim' }, t('aboutText'), ' ', h('a', { href: 'https://github.com/achir1015/xiaoke-recorder', target: '_blank', rel: 'noopener' }, 'GitHub')));
+  body.append(h('h3', {}, t('about')), h('div', { class: 'small', style: { margin: '4px 0' } }, '© 2026 吳玉柱 · ', h('a', { href: 'mailto:achir1015@gmail.com' }, 'achir1015@gmail.com')), h('div', { class: 'small dim' }, t('aboutText'), ' ', h('a', { href: 'https://github.com/achir1015/xiaoke-recorder', target: '_blank', rel: 'noopener' }, 'GitHub')));
   dialog(t('settings'), body, [{ label: t('close'), value: true, cls: 'pri' }]);
 }
 

@@ -37,7 +37,7 @@ Priority: optional
 Architecture: amd64
 Installed-Size: $SIZE
 Depends: libxcb-cursor0, libxkbcommon-x11-0, libegl1, libnss3, libpulse0, libasound2
-Maintainer: achir1015 <achir1015@users.noreply.github.com>
+Maintainer: 吳玉柱 <achir1015@gmail.com>
 Homepage: https://github.com/achir1015/xiaoke-recorder
 Description: 小柯機器人螢幕錄製工具 Xiaoke Screen Recorder
  Record your screen, microphone, system audio and webcam; auto zoom,

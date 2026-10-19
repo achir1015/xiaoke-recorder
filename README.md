@@ -10,6 +10,7 @@
 所有錄影與剪輯都在你的裝置上處理，**不會上傳到任何伺服器**。
 
 - 🌐 **線上版**：<https://achir1015.github.io/xiaoke-recorder/>（電腦、平板、手機都能用）
+- 👤 **開發者**：吳玉柱（[achir1015@gmail.com](mailto:achir1015@gmail.com)）
 - 💾 **桌面版下載**：[GitHub Releases](https://github.com/achir1015/xiaoke-recorder/releases/latest)（Windows 11／Mac／Linux）
 
 ## 平台
@@ -137,6 +138,10 @@ cd .. && bash desktop/linux/package.sh 1.0.0
 - 字幕：Transformers.js 在 Web Worker 中執行 Whisper（WebGPU／WASM）
 - 桌面版：pywebview（Windows 用 WebView2；Mac／Linux 用 Qt WebEngine）＋本機 http 伺服器；原生錄製用 ffmpeg（不畫系統游標）＋ pynput 記錄游標與點擊
 
+## 開發者
+
+本專案由 **吳玉柱** 開發與維護。問題回報、建議或合作請來信 [achir1015@gmail.com](mailto:achir1015@gmail.com)，或在 [Issues](https://github.com/achir1015/xiaoke-recorder/issues) 留言。
+
 ## 授權
 
-MIT License。可免費用於個人與商業用途。第三方函式庫授權見 `vendor/*.LICENSE*`（Mediabunny：MPL-2.0；gifenc：MIT）。
+MIT License（© 2026 吳玉柱）。可免費用於個人與商業用途。第三方函式庫授權見 `vendor/*.LICENSE*`（Mediabunny：MPL-2.0；gifenc：MIT）。

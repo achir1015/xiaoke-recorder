@@ -11,3 +11,6 @@
 | **線上版** | 不用下載 | https://achir1015.github.io/xiaoke-recorder/ （Chrome／Edge／Safari） |
 
 已安裝的桌面版會自動檢查新版本，按「立即更新」即可。
+
+---
+開發者：**吳玉柱**（achir1015@gmail.com）· 原始碼與說明：https://github.com/achir1015/xiaoke-recorder
