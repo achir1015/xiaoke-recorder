@@ -180,7 +180,7 @@ jobs:
           cp -R ../css ../js ../vendor ../icons web/
       - name: PyInstaller 打包
         working-directory: desktop
-        run: python -m PyInstaller $(cat pyinstaller_args.txt | tr '\n' ' ') --add-data "web:web" --distpath ../dist --workpath ../build app.py
+        run: xvfb-run -a python -m PyInstaller $(cat pyinstaller_args.txt | tr '\n' ' ') --add-data "web:web" --distpath ../dist --workpath ../build app.py
       - name: 自我測試（虛擬螢幕）
         env:
           QTWEBENGINE_DISABLE_SANDBOX: '1'

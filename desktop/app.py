@@ -385,7 +385,7 @@ class SelfTest:
     (async function () {
       const r = { steps: [] };
       const step = async (name, fn) => { try { const v = await fn(); r.steps.push({ name, ok: true, info: String(v ?? '') }); } catch (e) { r.steps.push({ name, ok: false, info: String(e && (e.stack || e.message) || e).slice(0, 400) }); } };
-      const mb = await import('./vendor/mediabunny.min.mjs');
+      const mb = await import(location.origin + '/vendor/mediabunny.min.mjs');
       let blob;
       await step('產生測試錄影', async () => {
         const W = 640, H = 360, fps = 30, dur = 4;
@@ -404,20 +404,20 @@ class SelfTest:
         blob = new Blob([out.target.buffer], { type: 'video/mp4' });
         return codec + '/' + acodec + ' ' + blob.size + ' bytes';
       });
-      const app = await import('./js/app.js');
+      const app = await import(location.origin + '/js/app.js');
       const samples = [], clicks = [];
       for (let i = 0; i < 240; i++) { const t = i / 60; samples.push([t, 80 + t * 120, 180]); if (i % 60 === 30) clicks.push([t, 80 + t * 120, 180, 1]); }
       await step('建立專案並開啟編輯器', async () => { await app.createProjectFromBlobs({ name: 'selftest', screen: { blob, track: 0 }, sys: { blob, track: 0 }, cursor: { w: 640, h: 360, samples, clicks } }); for (let i = 0; i < 50 && !document.querySelector('#editor canvas'); i++) await new Promise(r => setTimeout(r, 100)); if (!document.querySelector('#editor canvas')) throw new Error('editor not open'); return 'ok'; });
-      const { currentEditor } = await import('./js/editor.js');
+      const { currentEditor } = await import(location.origin + '/js/editor.js');
       const E = currentEditor();
       await step('自動縮放（游標）', async () => { await E.autoZoom(); return E.p.edit.zooms.length + ' 段'; });
       await step('註解與字幕', async () => { E.player.seek(0.5); E.addAnnotation('text'); E.addAnnotation('arrow'); E.addAnnotation('blur'); E.p.edit.captions = [{ id: 'c', start: 0.2, end: 2, text: '自我測試字幕' }]; E.change({ panel: true }); return E.p.edit.annotations.length; });
       await step('剪掉與變速', async () => { E.player.seek(2.5); E.addRegion('trim', 0.5); E.player.seek(1); E.addRegion('speed', 0.5, { rate: 2 }); return E.player.outDur.toFixed(2) + ' 秒'; });
-      const { exportVideo, exportMp3 } = await import('./js/exporter.js');
-      const { desktopSave } = await import('./js/desktop.js');
+      const { exportVideo, exportMp3 } = await import(location.origin + '/js/exporter.js');
+      const { desktopSave } = await import(location.origin + '/js/desktop.js');
       await step('匯出 MP4 並存檔', async () => { const res = await exportVideo(E.p, E.media, E.assets, { format: 'mp4', height: 720, fps: 30, quality: 'medium' }, () => { }); const p = await desktopSave('selftest-export.mp4', res.blob); r.mp4 = { path: p, size: res.blob.size }; return res.W + 'x' + res.H + ' ' + res.blob.size; });
       await step('匯出 MP3 並存檔', async () => { const res = await exportMp3(E.p, E.media, () => { }); const p = await desktopSave('selftest-audio.mp3', res.blob); r.mp3 = { path: p, size: res.blob.size }; return res.blob.size; });
-      await step('網頁版本號', async () => (await import('./js/updater.js')).APP_VERSION);
+      await step('網頁版本號', async () => (await import(location.origin + '/js/updater.js')).APP_VERSION);
       r.ok = r.steps.every(s => s.ok);
       window.__kkTest = r;
       return 'started';
