@@ -1,5 +1,7 @@
 # 小柯機器人螢幕錄製工具（Xiaoke Screen Recorder）
 
+<img width="1901" height="943" alt="image" src="https://github.com/user-attachments/assets/540588be-c38c-4f43-93a0-fa89d7d79366" />
+
 <img width="1461" height="932" alt="image" src="https://github.com/user-attachments/assets/90ffacbd-5a84-45c0-aa12-ef8b4e7b9012" />
 
 <img src="icons/icon-512.png" width="120" align="right" alt="小柯機器人螢幕錄製工具">
