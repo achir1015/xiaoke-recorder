@@ -55,5 +55,5 @@ export default {
   sc_recordStop: '停止錄影並剪輯',
   hotkeysHint: '熱鍵（在其他程式裡也能用）：暫停 {pause}　停止 {stop}　麥克風 {mic}',
   hotkeysHintWeb: '熱鍵（這個分頁在前景時有效）：暫停 {pause}　停止 {stop}　麥克風 {mic}',
-  globalHotkeyNote: '桌面版的錄影熱鍵（開始、暫停、停止、麥克風）是全域熱鍵：主視窗縮小、在其他程式裡也能用。',
+  globalHotkeyNote: 'Windows／Linux 桌面版的錄影熱鍵（開始、暫停、停止、麥克風）是全域熱鍵：主視窗縮小、在其他程式裡也能用。',
 };

@@ -55,5 +55,5 @@ export default {
   sc_recordStop: 'Stop recording & edit',
   hotkeysHint: 'Hotkeys (work in any app): pause {pause} · stop {stop} · mic {mic}',
   hotkeysHintWeb: 'Hotkeys (while this tab is focused): pause {pause} · stop {stop} · mic {mic}',
-  globalHotkeyNote: 'In the desktop app the recording hotkeys (start, pause, stop, mic) are global — they work even when the window is minimized or another app is in front.',
+  globalHotkeyNote: 'In the Windows/Linux desktop app the recording hotkeys (start, pause, stop, mic) are global — they work even when the window is minimized or another app is in front.',
 };

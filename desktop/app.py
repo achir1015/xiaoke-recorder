@@ -428,6 +428,10 @@ class Hotkeys:
 
     def set(self, mapping):
         self.stop()
+        if IS_MAC:
+            # macOS：pynput 的鍵盤監聽會在背景執行緒呼叫輸入法 API，新版 macOS 會直接讓 App 當掉。
+            # Mac 版改用網頁內快速鍵（App 在前景時）＋迷你控制列按鈕。
+            return {"status": "unsupported"}
         combos = {}
         for action, combo in (mapping or {}).items():
             pk = self.to_pynput(combo)
@@ -817,11 +821,17 @@ class SelfTest:
         out = {"ok": False, "steps": []}
         log = lambda name, ok, info="": out["steps"].append({"name": name, "ok": bool(ok), "info": str(info)})
         try:
-            from pynput import keyboard
-            kb = keyboard.Controller()
+            if not IS_MAC:
+                from pynput import keyboard
+                kb = keyboard.Controller()
+
+            names = {"r": "recordStart", "p": "recordPause", "s": "recordStop", "m": "micToggle"}
 
             def hotkey(ch):
-                mod = keyboard.Key.cmd if IS_MAC else keyboard.Key.ctrl_l
+                if IS_MAC:   # Mac 沒有全域熱鍵：直接走網頁的熱鍵處理
+                    w.evaluate_js(f"window.__xkrHotkey('{names[ch]}')")
+                    return
+                mod = keyboard.Key.ctrl_l
                 with kb.pressed(mod):
                     with kb.pressed(keyboard.Key.alt_l):
                         kb.press(ch)
@@ -829,7 +839,8 @@ class SelfTest:
 
             w.evaluate_js("import(location.origin + '/js/app.js').then(m => Object.assign(m.prefs, { mic: false, cam: false, sys: false, native: true, countdown: 2, fps: 15, nativeTarget: 'monitor:0' }))")
             time.sleep(1)
-            log("全域熱鍵已註冊", br._hotkeys.listener is not None, len(br._hotkeys.mapping))
+            if not IS_MAC:
+                log("全域熱鍵已註冊", br._hotkeys.listener is not None, len(br._hotkeys.mapping))
             hotkey("r")                                   # Ctrl+Alt+R 開始錄影
             for _ in range(20):
                 time.sleep(0.25)

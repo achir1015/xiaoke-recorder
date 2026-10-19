@@ -357,7 +357,7 @@ function showRecView(rec, native) {
   const pipBtn = 'documentPictureInPicture' in window ? h('button', { class: 'btn ghost hide-sm', title: t('floatingBar'), onclick: () => openPip() }, ic('pip')) : null;
   const hud = h('div', { class: 'rec-hud' }, timeBox, pauseBtn, stopBtn, micBox, pipBtn, cancelBtn);
   const hint = h('div', { class: 'small dim', style: { textAlign: 'center', padding: '0 12px 8px', background: 'var(--panel)' } },
-    t(Desktop.available ? 'hotkeysHint' : 'hotkeysHintWeb', { pause: L('recordPause'), stop: L('recordStop'), mic: L('micToggle') }));
+    t(Desktop.available && hotkeysRegistered ? 'hotkeysHint' : 'hotkeysHintWeb', { pause: L('recordPause'), stop: L('recordStop'), mic: L('micToggle') }));
   view.append(stage, hud, hint);
   app.replaceChildren(view);
 
