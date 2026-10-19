@@ -19,6 +19,10 @@ export function defaultEdit() {
     cursor: { show: true, theme: 'mac', size: 1.4, smooth: 60, click: 'ripple', clickColor: '#ffd23f', hideIdle: false, highlight: false },
     captionStyle: { show: true, size: 4.2, color: '#ffffff', bg: 'rgba(0,0,0,.55)', pos: 'bottom', font: 'sans' },
     audio: { mic: 1, sys: 1, micMute: false, sysMute: false },
+    // 素材庫（來自小柯影音剪輯助手）
+    intro: null,        // 片頭 {id:'intro3', dur, title, sub, accent}
+    outro: null,        // 片尾 {id:'outro0', dur, title, sub, accent}
+    music: null,        // 背景配樂 {id:'mu_happy0', volume, fadeIn, fadeOut}
   };
 }
 
@@ -180,5 +184,18 @@ export function srcToOut(segs, s) {
     if (s < g.s1) return g.o0 + (s - g.s0) / g.rate;
   }
   return outputDuration(segs);
+}
+// 完整輸出時間軸：片頭 → 錄影（剪掉、變速後）→ 片尾
+export function buildTimeline(edit, duration) {
+  const segs = buildSegments(edit, duration);
+  const introD = edit.intro ? edit.intro.dur : 0, recOut = outputDuration(segs), outroD = edit.outro ? edit.outro.dur : 0;
+  return { segs, introD, recOut, outroD, total: introD + recOut + outroD };
+}
+// 輸出時間 o 對應到哪個部分：{kind:'intro'|'rec'|'outro', lt(該段內秒數), src(錄影原始秒數)}
+export function partAt(tl, o) {
+  if (o < tl.introD) return { kind: 'intro', lt: o, src: 0 };
+  const r = o - tl.introD;
+  if (r < tl.recOut || !tl.outroD) return { kind: 'rec', lt: r, src: outToSrc(tl.segs, Math.min(r, tl.recOut)) };
+  return { kind: 'outro', lt: r - tl.recOut, src: tl.segs.length ? tl.segs[tl.segs.length - 1].s1 - 0.001 : 0 };
 }
 export function isTrimmed(edit, s) { return edit.trims.some(r => s >= r.start && s < r.end); }

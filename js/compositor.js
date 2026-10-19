@@ -2,6 +2,57 @@
 // 預覽和匯出都呼叫同一個 render()，保證「看到的就是匯出的」。
 import { clamp, lerp, ease, roundRectPath } from './util.js';
 import { drawCursor, drawClickEffect } from './cursor.js';
+import * as LIB from './library.js';
+
+// ---- 素材庫（小柯影音剪輯助手）的快取 ----
+const stickerCache = new Map();
+export function stickerCanvas(i) {
+  if (!stickerCache.has(i)) {
+    const def = LIB.STK[i];
+    if (!def) return null;
+    const [, fn, size] = def, [w, h] = size || [512, 512];
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    try { fn(c.getContext('2d')); } catch { }
+    stickerCache.set(i, c);
+  }
+  return stickerCache.get(i);
+}
+const fxCanvas = document.createElement('canvas');
+// 動態特效（綠幕素材）：直接畫在透明畫布上，不需要去背
+function drawEffect(ctx, a, t, x, y, w, h) {
+  const fx = LIB.GSCR[a.gs];
+  if (!fx || w < 2 || h < 2) return;
+  const k = Math.min(1, 1280 / Math.max(w, h)), cw = Math.max(2, Math.round(w * k)), ch = Math.max(2, Math.round(h * k));
+  if (fxCanvas.width !== cw || fxCanvas.height !== ch) { fxCanvas.width = cw; fxCanvas.height = ch; }
+  const g = fxCanvas.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cw, ch);
+  try { fx.fn({ g, W: cw, H: ch, t: Math.max(0, t - a.start), D: a.end - a.start }); } catch { }
+  ctx.drawImage(fxCanvas, x, y, w, h);
+}
+// 3D 立體文字（影音剪輯助手的 6 種動畫）：以 (cx, cy) 為中心畫多行字
+function draw3DText(ctx, lines, cx, cy, fs, d3, lt, font) {
+  ctx.save();
+  ctx.font = `900 ${fs}px ${font}`;
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const lh = fs * 1.3, total = lines.length * lh, widths = lines.map(l => ctx.measureText(l).width);
+  const R = LIB.anim3D(d3, Math.max(0, lt), fs);
+  ctx.translate(cx, cy + R.dy); ctx.rotate(R.rot); ctx.transform(R.sx * R.scale, 0, R.skew, R.sy * R.scale, 0, 0);
+  let ci = 0;
+  lines.forEach((ln, i) => {
+    const y = -total / 2 + lh / 2 + i * lh, lx = -widths[i] / 2;
+    if (R.perChar) { let x = lx; for (const ch of [...ln]) { const q = R.perChar(ci++); ctx.save(); ctx.globalAlpha *= q.alpha; LIB.glyph3D(ctx, ch, x, y + q.dy, fs, d3, R.ex, R.ey, q.depthK); ctx.restore(); x += ctx.measureText(ch).width; } }
+    else LIB.glyph3D(ctx, ln, lx, y, fs, d3, R.ex, R.ey, R.depthK);
+  });
+  ctx.restore();
+  return { w: Math.max(...widths, fs), h: total };
+}
+// 片頭／片尾畫面
+export function renderTemplate(ctx, W, H, clip, lt) {
+  const tpl = LIB.TPL[clip.id];
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+  if (tpl) LIB.drawTemplate(ctx, W, H, lt, clip.dur, tpl, { title: clip.title, sub: clip.sub, accent: clip.accent });
+  ctx.restore();
+}
 
 // ---- 桌布（程式產生，不需要下載圖片）----
 export const WALLPAPERS = {
@@ -124,6 +175,8 @@ export function viewWindow(v) {
 
 // ---- 註解動畫 ----
 const ANIM_IN = 0.35, ANIM_OUT = 0.25;
+const camMaskCv = { c: null };
+function camMaskCanvas(w, h) { let c = camMaskCv.c; if (!c) c = camMaskCv.c = document.createElement('canvas'); if (c.width !== w || c.height !== h) { c.width = Math.max(2, w); c.height = Math.max(2, h); } return c; }
 function animState(a, t) {
   const pin = clamp((t - a.start) / ANIM_IN, 0, 1), pout = clamp((a.end - t) / ANIM_OUT, 0, 1);
   const k = Math.min(pin, pout);
@@ -167,7 +220,11 @@ export function render(ctx, W, H, t, st) {
   const p = st.project, e = p.edit, bg = e.background;
   ctx.save();
   ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(backgroundCanvas(W, H, bg, st.bgImage), 0, 0);
+  if (bg.type === 'animated' && LIB.BASIC[bg.animated]) {
+    ctx.save();
+    try { LIB.BASIC[bg.animated]({ g: ctx, W, H, t: st.ot ?? t, D: 60, acc: '#f0a83a', tw: 0, ty: H / 2, ts: 0 }); } catch { }
+    ctx.restore();
+  } else ctx.drawImage(backgroundCanvas(W, H, bg, st.bgImage), 0, 0);
 
   const R = contentRect(p, W, H);
   const rad = (bg.radius / 100) * Math.min(R.w, R.h) * 0.5;
@@ -279,7 +336,17 @@ export function render(ctx, W, H, t, st) {
     const an = active ? animState(a, t) : { alpha: .35, dy: 0, s: 1, chars: 1 };
     ctx.save();
     ctx.globalAlpha = an.alpha;
-    if (a.type === 'text') {
+    if (a.type === 'text' && a.d3) {
+      const fs = (a.size / 100) * scl, font = FONTS[a.font] || FONTS.sans;
+      ctx.font = `900 ${fs}px ${font}`;
+      const lines = wrapLines(ctx, a.text || ' ', Math.max(fs * 2, a.w * scl));
+      const pout = clamp((a.end - t) / ANIM_OUT, 0, 1);
+      ctx.globalAlpha = active ? pout : .35;
+      const est = { w: Math.max(...lines.map(l => ctx.measureText(l).width), fs), h: lines.length * fs * 1.3 };
+      const x = toX(a.x), y = toY(a.y);
+      draw3DText(ctx, lines, x + est.w / 2, y + est.h / 2, fs, a.d3, active ? t - a.start : 2, font);
+      boxes.push({ a, x, y, w: est.w, h: est.h, active });
+    } else if (a.type === 'text') {
       const fs = (a.size / 100) * scl;
       ctx.font = `${a.bold ? 700 : 500} ${fs}px ${FONTS[a.font] || FONTS.sans}`;
       const maxW = Math.max(fs * 2, a.w * scl);
@@ -321,6 +388,17 @@ export function render(ctx, W, H, t, st) {
       ctx.strokeStyle = a.color || '#ffd23f'; ctx.lineWidth = (a.width || 1) / 100 * scl * 0.5;
       roundRectPath(ctx, 0, 0, w, h, Math.min(w, h) * .12); ctx.stroke();
       boxes.push({ a, x, y, w, h, active });
+    } else if (a.type === 'sticker') {
+      const img = stickerCanvas(a.stk);
+      const x = toX(a.x), y = toY(a.y), w = a.w * scl, h = a.h * scl;
+      ctx.translate(x + w / 2, y + h / 2); ctx.scale(an.s, an.s); ctx.translate(-w / 2, -h / 2);
+      if (img) ctx.drawImage(img, 0, 0, w, h);
+      boxes.push({ a, x, y, w, h, active });
+    } else if (a.type === 'effect') {
+      const x = toX(a.x), y = toY(a.y), w = a.w * scl, h = a.h * scl;
+      if (active) drawEffect(ctx, a, t, x, y, w, h);
+      else { ctx.strokeStyle = '#22d3ee'; ctx.setLineDash([6, 4]); ctx.strokeRect(x, y, w, h); }
+      boxes.push({ a, x, y, w, h, active });
     } else if (a.type === 'image') {
       const img = st.images?.get(a.blobKey);
       const x = toX(a.x), y = toY(a.y), w = a.w * scl, h = a.h * scl;
@@ -343,6 +421,23 @@ export function render(ctx, W, H, t, st) {
     const cx = clamp(cam.x * W, cw / 2 + 4, W - cw / 2 - 4), cy = clamp(cam.y * H, ch / 2 + 4, H - ch / 2 - 4);
     const x = cx - cw / 2, y = cy - ch / 2;
     const r = cam.shape === 'circle' ? Math.min(cw, ch) / 2 : cam.shape === 'square' ? Math.min(cw, ch) * 0.04 : Math.min(cw, ch) * 0.18;
+    const mk = String(cam.shape).startsWith('mask:') && LIB.MASK[cam.shape.slice(5)];
+    if (mk) {
+      // 蒙版形狀（影音剪輯助手的 30 種）：先畫攝影機，再用形狀裁切
+      const off = camMaskCanvas(Math.round(cw), Math.round(ch)), g = off.getContext('2d');
+      g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, off.width, off.height);
+      const s2 = Math.max(cw / fw, ch / fh), sw2 = cw / s2, sh2 = ch / s2;
+      if (cam.mirror) { g.translate(off.width, 0); g.scale(-1, 1); }
+      st.camera.draw(g, (fw - sw2) / 2, (fh - sh2) / 2, sw2, sh2, 0, 0, off.width, off.height);
+      g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'destination-in'; g.fillStyle = '#000';
+      g.translate(off.width / 2, off.height / 2); try { mk.fn(g, off.width / .9, off.height / .9, st.ot ?? t); } catch { }
+      g.setTransform(1, 0, 0, 1, 0, 0); g.globalCompositeOperation = 'source-over';
+      ctx.save();
+      if (cam.shadow > 0) { ctx.shadowColor = `rgba(0,0,0,${cam.shadow / 150})`; ctx.shadowBlur = size * 0.12 * cam.shadow / 100; ctx.shadowOffsetY = size * 0.03; }
+      ctx.drawImage(off, x, y, cw, ch);
+      ctx.restore();
+      camBox = { x, y, w: cw, h: ch };
+    } else {
     ctx.save();
     if (cam.shadow > 0) { ctx.shadowColor = `rgba(0,0,0,${cam.shadow / 150})`; ctx.shadowBlur = size * 0.12 * cam.shadow / 100; ctx.shadowOffsetY = size * 0.03; }
     ctx.fillStyle = cam.borderColor; roundRectPath(ctx, x, y, cw, ch, r); ctx.fill();
@@ -356,13 +451,23 @@ export function render(ctx, W, H, t, st) {
     else st.camera.draw(ctx, (fw - sw) / 2, (fh - sh) / 2, sw, sh, x, y, cw, ch);
     ctx.restore();
     camBox = { x, y, w: cw, h: ch };
+    }
   }
 
   // 字幕
   const cst = e.captionStyle;
   if (cst.show) {
     const cap = e.captions.find(c => t >= c.start && t < c.end);
-    if (cap && cap.text.trim()) {
+    if (cap && cap.text.trim() && cst.d3) {
+      const fs = cst.size / 100 * Math.min(W, H) * 1.25, font = FONTS[cst.font] || FONTS.sans;
+      ctx.save();
+      ctx.font = `900 ${fs}px ${font}`;
+      const lines = wrapLines(ctx, cap.text.trim(), W * 0.84), hh = lines.length * fs * 1.3;
+      const cy = cst.pos === 'top' ? H * 0.08 + hh / 2 : cst.pos === 'middle' ? H / 2 : H - H * 0.08 - hh / 2;
+      ctx.globalAlpha = clamp((cap.end - t) / 0.2, 0, 1);
+      draw3DText(ctx, lines, W / 2, cy, fs, cst.d3, t - cap.start, font);
+      ctx.restore();
+    } else if (cap && cap.text.trim()) {
       const fs = cst.size / 100 * Math.min(W, H);
       ctx.save();
       ctx.font = `600 ${fs}px ${FONTS[cst.font] || FONTS.sans}`;

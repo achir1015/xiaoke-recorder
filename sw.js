@@ -1,9 +1,9 @@
 // 小柯機器人螢幕錄製工具：離線快取（手機、iPad「加入主畫面」後沒有網路也能開）
 // 網頁與 version.json 網路優先（有新版就拿新版），其他檔案快取優先。
-const CACHE = 'xiaoke-recorder-v1';
+const CACHE = 'xiaoke-recorder-v2';
 const CORE = ['./', './index.html', './version.json', './manifest.webmanifest', './css/app.css', './favicon.svg', './favicon-32.png', './favicon-16.png', './apple-touch-icon.png',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './vendor/mediabunny.min.mjs', './vendor/gifenc.esm.js', './vendor/mediabunny-mp3-encoder.min.mjs',
-  ...['app', 'autozoom', 'captions', 'captions-worker', 'compositor', 'cursor', 'desktop', 'editor', 'exporter', 'i18n', 'icons', 'media', 'player', 'project', 'recorder', 'shortcuts', 'timeline', 'updater', 'util'].map(f => `./js/${f}.js`),
+  ...['app', 'assets', 'library', 'autozoom', 'captions', 'captions-worker', 'compositor', 'cursor', 'desktop', 'editor', 'exporter', 'i18n', 'icons', 'media', 'player', 'project', 'recorder', 'shortcuts', 'timeline', 'updater', 'util'].map(f => `./js/${f}.js`),
   './js/lang/zh-TW.js', './js/lang/en.js'];
 
 self.addEventListener('install', e => {

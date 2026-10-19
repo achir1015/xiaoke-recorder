@@ -4,8 +4,9 @@ import {
   getFirstEncodableVideoCodec, getFirstEncodableAudioCodec,
 } from '../vendor/mediabunny.min.mjs';
 import { GIFEncoder, quantize, applyPalette } from '../vendor/gifenc.esm.js';
-import { buildSegments, outputDuration, outToSrc } from './project.js';
-import { render, outputSize } from './compositor.js';
+import { buildSegments, outputDuration, outToSrc, buildTimeline, partAt } from './project.js';
+import { render, outputSize, renderTemplate } from './compositor.js';
+import { getMusicBuffer, scheduleMusic } from './assets.js';
 
 // 把一個 AudioBuffer 依照剪輯片段排進 AudioContext（預覽與匯出共用）
 export function scheduleAudio(ctx, dest, buffer, gain, segs, fromOut = 0, when = 0) {
@@ -29,18 +30,21 @@ export function scheduleAudio(ctx, dest, buffer, gain, segs, fromOut = 0, when =
   return { gain: g, nodes, stop() { nodes.forEach(n => { try { n.stop(); } catch { } }); g.disconnect(); } };
 }
 
-export async function mixAudio(project, media, segs, dur) {
-  const a = project.edit.audio;
+// 混音：錄影聲音（套用剪掉、變速、音量，接在片頭之後）＋背景配樂（整支影片循環）
+export async function mixAudio(project, media, tl) {
+  const a = project.edit.audio, dur = tl.total;
   const list = [];
   for (const name of ['mic', 'sys']) {
     if (a[name + 'Mute'] || !media.audio[name]) continue;
     const buf = await media.decodeAudio(name);
     if (buf) list.push([buf, a[name]]);
   }
-  if (!list.length || dur <= 0) return null;
+  const music = project.edit.music ? await getMusicBuffer(project.edit.music.id).catch(() => null) : null;
+  if ((!list.length && !music) || dur <= 0) return null;
   const sr = 48000;
   const off = new OfflineAudioContext(2, Math.ceil(dur * sr) + 1, sr);
-  for (const [buf, gain] of list) scheduleAudio(off, off.destination, buf, gain, segs, 0, 0);
+  for (const [buf, gain] of list) scheduleAudio(off, off.destination, buf, gain, tl.segs, 0, tl.introD);
+  if (music) scheduleMusic(off, off.destination, music, project.edit.music, dur, 0, 0);
   return off.startRendering();
 }
 
@@ -54,8 +58,8 @@ const QUALITY_BPP = { low: 0.05, medium: 0.09, high: 0.15, max: 0.25 };
 
 // opts: { format:'mp4'|'gif', height, fps, quality, gifWidth }
 export async function exportVideo(project, media, assets, opts, onProgress, signal) {
-  const segs = buildSegments(project.edit, project.duration);
-  const dur = outputDuration(segs);
+  const tl = buildTimeline(project.edit, project.duration);
+  const dur = tl.total;
   if (dur <= 0) throw new Error('empty');
   const fps = opts.fps;
   let { W, H } = outputSize(project, opts.height);
@@ -63,7 +67,9 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
   const canvas = new OffscreenCanvas(W, H);
   const ctx = canvas.getContext('2d', { alpha: false });
   const N = Math.max(1, Math.ceil(dur * fps));
-  const times = Array.from({ length: N }, (_, i) => outToSrc(segs, i / fps));
+  // 每一格屬於片頭、錄影或片尾；只有錄影的格子需要解碼影片
+  const parts = Array.from({ length: N }, (_, i) => partAt(tl, i / fps));
+  const times = parts.filter(p => p.kind === 'rec').map(p => p.src);
   const iters = {};
   for (const name of ['screen', 'camera']) {
     if (!media.video[name]) continue;
@@ -71,6 +77,14 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     iters[name] = new VideoSampleSink(media.video[name]).samplesAtTimestamps(times);
   }
   const st = { project, cursor: assets.cursor, images: assets.images, bgImage: assets.bgImage, preview: false };
+  const ed = project.edit;
+  // 畫第 i 格：片頭／片尾用範本，錄影用合成器
+  const frame = async i => {
+    const p = parts[i];
+    if (p.kind !== 'rec') { renderTemplate(ctx, W, H, p.kind === 'intro' ? ed.intro : ed.outro, p.lt); return; }
+    await nextFrames();
+    render(ctx, W, H, p.src, { ...st, screen: cur.screen, camera: cur.camera, ot: i / fps });
+  };
   const cur = {};
   const nextFrames = async () => {
     for (const [name, it] of Object.entries(iters)) {
@@ -86,8 +100,7 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
       const delay = Math.round(1000 / fps);
       for (let i = 0; i < N; i++) {
         if (signal?.aborted) throw new DOMException('abort', 'AbortError');
-        await nextFrames();
-        render(ctx, W, H, times[i], { ...st, screen: cur.screen, camera: cur.camera });
+        await frame(i);
         const { data } = ctx.getImageData(0, 0, W, H);
         const palette = quantize(data, 256, { format: 'rgb565' });
         gif.writeFrame(applyPalette(data, palette, 'rgb565'), W, H, { palette, delay });
@@ -104,7 +117,7 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     const vsrc = new CanvasSource(canvas, { codec: vcodec, bitrate: Math.round(W * H * fps * (QUALITY_BPP[opts.quality] || 0.12)), keyFrameInterval: 2 });
     output.addVideoTrack(vsrc, { frameRate: fps });
     onProgress?.(0, 'audio');
-    const mixed = await mixAudio(project, media, segs, dur);
+    const mixed = await mixAudio(project, media, tl);
     let asrc = null;
     if (mixed) {
       const acodec = await getFirstEncodableAudioCodec(['aac', 'opus'], { numberOfChannels: 2, sampleRate: 48000 });
@@ -118,8 +131,7 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     }
     for (let i = 0; i < N; i++) {
       if (signal?.aborted) { await output.cancel(); throw new DOMException('abort', 'AbortError'); }
-      await nextFrames();
-      render(ctx, W, H, times[i], { ...st, screen: cur.screen, camera: cur.camera });
+      await frame(i);
       await vsrc.add(i / fps, 1 / fps);
       onProgress?.((i + 1) / N);
     }
@@ -162,10 +174,10 @@ export async function audioBufferToMp3(buf, onProgress, signal) {
 
 // 匯出剪輯後（套用剪掉、變速、音量）的混音成 MP3
 export async function exportMp3(project, media, onProgress, signal) {
-  const segs = buildSegments(project.edit, project.duration);
-  const dur = outputDuration(segs);
+  const tl = buildTimeline(project.edit, project.duration);
+  const dur = tl.total;
   onProgress?.(0, 'audio');
-  const mixed = await mixAudio(project, media, segs, dur);
+  const mixed = await mixAudio(project, media, tl);
   if (!mixed) throw new Error('no-audio');
   const blob = await audioBufferToMp3(mixed, onProgress, signal);
   return { blob, ext: 'mp3', dur, W: 0, H: 0 };

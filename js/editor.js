@@ -5,7 +5,9 @@ import { t, getLang } from './i18n.js';
 import { Store, defaultEdit, srcToOut } from './project.js';
 import { MediaSet, computePeaks } from './media.js';
 import { CursorTrack, CURSOR_THEMES } from './cursor.js';
-import { WALLPAPERS, GRADIENTS, SOLIDS, ASPECTS, FONTS, outputSize, viewAt } from './compositor.js';
+import { WALLPAPERS, GRADIENTS, SOLIDS, ASPECTS, FONTS, outputSize, viewAt, stickerCanvas } from './compositor.js';
+import * as LIB from './library.js';
+import { getMusicBuffer, musicInfo, musicReady } from './assets.js';
 import { Player } from './player.js';
 import { Timeline } from './timeline.js';
 import { exportVideo, remuxToMp4, exportMp3, audioBufferToMp3 } from './exporter.js';
@@ -17,6 +19,16 @@ import { Desktop, desktopSave } from './desktop.js';
 import { toast, dialog, confirmBox, showHome, exportProjectFile, showSettings } from './app.js';
 
 let E = null; // 目前開啟的編輯器
+const LIBTHUMBS = new Map(); // 素材縮圖快取
+// 一般字幕樣式（對應影音剪輯助手的 6 種）
+const PRESET_STYLE = {
+  tp0: { size: 4, color: '#ffffff', bg: 'rgba(0,0,0,.6)', stroke: '', bold: false, anim: 'fade', pos: 'bottom' },
+  tp1: { size: 8, color: '#ffffff', bg: '', stroke: '', bold: true, anim: 'fade', pos: 'middle' },
+  tp2: { size: 6.5, color: '#ffffff', bg: '', stroke: '#000000', bold: true, anim: 'none', pos: 'bottom' },
+  tp3: { size: 7, color: '#ffd400', bg: '', stroke: '#000000', bold: true, anim: 'pop', pos: 'bottom' },
+  tp4: { size: 3.8, color: '#f0a83a', bg: '', stroke: '#000000', bold: true, anim: 'slide', pos: 'top' },
+  tp5: { size: 4, color: '#ffffff', bg: 'rgba(0,0,0,.6)', stroke: '', bold: false, anim: 'type', pos: 'bottom' },
+};
 
 export function closeEditor() {
   if (!E) return;
@@ -39,7 +51,7 @@ export async function openEditor(p) {
 
 const TABS = [
   ['cut', 'scissors'], ['bg', 'bg'], ['frame', 'crop'], ['zoom', 'zoom'], ['cursor', 'cursor'],
-  ['camera', 'camera'], ['annotate', 'text'], ['captions', 'captions'], ['audio', 'audio'],
+  ['camera', 'camera'], ['annotate', 'text'], ['library', 'layers'], ['captions', 'captions'], ['audio', 'audio'],
 ];
 
 class Editor {
@@ -381,6 +393,7 @@ class Editor {
 
   // 選取框、控制點、縮放焦點、裁切框
   drawOverlay(L) {
+    if (!L) return; // 片頭／片尾畫面沒有可編輯的東西
     const ctx = this.player.ctx, k = this.canvas.width / this.canvas.getBoundingClientRect().width || 1;
     ctx.save();
     const s = this.findSel();
@@ -490,7 +503,8 @@ class Editor {
 
   panel_bg(el) {
     const bg = this.p.edit.background;
-    el.append(this.segRow('', bg, 'type', [['wallpaper', t('wallpaper')], ['gradient', t('gradient')], ['solid', t('solid')], ['image', t('image')]]));
+    el.append(this.segRow('', bg, 'type', [['wallpaper', t('wallpaper')], ['animated', t('lib_bg')], ['gradient', t('gradient')], ['solid', t('solid')], ['image', t('image')]], { onchange: v => { if (v === 'animated' && !bg.animated) bg.animated = 'bokeh'; } }));
+    if (bg.type === 'animated') this.lib_bg(el);
     const sw = h('div', { class: 'swatches' });
     if (bg.type === 'wallpaper') {
       for (const [k, w] of Object.entries(WALLPAPERS)) {
@@ -611,6 +625,8 @@ class Editor {
     el.append(this.toggleRow(t('showCamera'), c, 'show'),
       this.segRow(t('shape'), c, 'shape', [['circle', t('shape_circle')], ['rounded', t('shape_rounded')], ['square', t('shape_square')], ['wide', t('shape_wide')], ['tall', t('shape_tall')]]),
       this.slider(t('size'), c, 'size', 8, 50, 0.5, { fmt: v => v + '%' }),
+      h('details', { open: String(c.shape).startsWith('mask:') }, h('summary', { class: 'small', style: { cursor: 'pointer', margin: '6px 0' } }, t('moreShapes')),
+        this.libGrid(LIB.MASKS.map(([k, name, fn]) => ({ name, on: c.shape === 'mask:' + k, thumb: this.thumb('mask_' + k, 96, 96, (g, w, hh) => { const gr = g.createLinearGradient(0, 0, w, hh); gr.addColorStop(0, '#f0a83a'); gr.addColorStop(1, '#3a78ad'); g.fillStyle = gr; g.translate(w / 2, hh / 2); fn(g, w * .9, hh * .9, .6); }), onclick: () => { c.shape = 'mask:' + k; this.change({ panel: true, timeline: false }); } })), '1/1')),
       this.toggleRow(t('mirror'), c, 'mirror'),
       this.slider(t('borderWidth'), c, 'border', 0, 10, 0.5),
       this.colorRow(t('borderColor'), c, 'borderColor'),
@@ -626,6 +642,8 @@ class Editor {
       h('button', { class: 'btn', onclick: () => this.addAnnotation('arrow') }, ic('arrow'), t('ann_arrow')),
       h('button', { class: 'btn', onclick: () => this.addAnnotation('rect') }, ic('rect'), t('ann_rect')),
       h('button', { class: 'btn', onclick: () => this.addAnnotation('blur') }, ic('blur'), t('ann_blur')),
+      h('button', { class: 'btn', onclick: () => { this.tab = 'library'; this._libCat = 'sticker'; this.renderTabs(); this.renderPanel(); } }, '★ ', t('ann_sticker')),
+      h('button', { class: 'btn', onclick: () => { this.tab = 'library'; this._libCat = 'effect'; this.renderTabs(); this.renderPanel(); } }, '✦ ', t('ann_effect')),
       h('button', { class: 'btn', onclick: async () => {
         const f = await pickFile('image/*');
         if (!f) return;
@@ -642,6 +660,8 @@ class Editor {
       el.append(h('h3', {}, t('ann_' + a.type)), this.timeFields(a, false));
       if (a.type === 'text') {
         el.append(h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('text')), h('textarea', { value: a.text, oninput: e => { a.text = e.target.value; this.change({}); } })),
+          h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('textStyle')), this.libGrid(LIB.TEXT_PRESETS.map(p => ({ name: t('tp_' + p.id), thumb: this.presetThumb(p), on: a.preset === p.id, onclick: () => { this.applyPreset(p, a, false); this.change({ panel: true }); } })))),
+          a.d3 ? h('button', { class: 'btn sm', onclick: () => { delete a.d3; a.preset = null; this.change({ panel: true }); } }, t('remove3d')) : null,
           this.slider(t('fontSize'), a, 'size', 1, 20, 0.1),
           this.selectRow(t('font'), a, 'font', Object.keys(FONTS).map(k => [k, t('font_' + k)])),
           this.toggleRow(t('bold'), a, 'bold'),
@@ -658,6 +678,10 @@ class Editor {
           this.segRow(t('animation'), a, 'anim', [['none', t('none')], ['fade', t('anim_fade')], ['pop', t('anim_pop')]]));
       } else if (a.type === 'blur') {
         el.append(this.segRow(t('blurMode'), a, 'mode', [['blur', t('blurGaussian')], ['pixelate', t('blurPixelate')]]), this.slider(t('strength'), a, 'strength', 5, 100, 1));
+      } else if (a.type === 'sticker') {
+        el.append(this.segRow(t('animation'), a, 'anim', [['none', t('none')], ['fade', t('anim_fade')], ['pop', t('anim_pop')], ['slide', t('anim_slide')], ['bounce', t('anim_bounce')]]));
+      } else if (a.type === 'effect') {
+        el.append(h('p', { class: 'small dim' }, (LIB.GSCR[a.gs]?.name || '') + ' · ' + t('effectHint')));
       } else if (a.type === 'image') {
         el.append(this.segRow(t('animation'), a, 'anim', [['none', t('none')], ['fade', t('anim_fade')], ['pop', t('anim_pop')], ['slide', t('anim_slide')]]));
       }
@@ -678,6 +702,8 @@ class Editor {
         h('button', { class: 'btn', onclick: () => this.addRegion('cap', 2.5, { text: t('newCaption') }) }, ic('plus'), t('addCaption'))));
     if (!hasAudio) el.append(h('div', { class: 'note small' }, t('noAudioForCaptions')));
     el.append(h('h3', {}, t('captionStyle')), this.toggleRow(t('showCaptions'), cs, 'show'),
+      this.libGrid(LIB.TEXT_PRESETS.map(p => ({ name: t('tp_' + p.id), thumb: this.presetThumb(p), on: cs.preset === p.id, onclick: () => { this.applyPreset(p, cs, true); this.change({ panel: true, timeline: false }); } }))),
+      cs.d3 ? h('button', { class: 'btn sm', style: { marginTop: '6px' }, onclick: () => { delete cs.d3; cs.preset = null; this.change({ panel: true, timeline: false }); } }, t('remove3d')) : null,
       this.slider(t('fontSize'), cs, 'size', 2, 9, 0.1),
       this.colorRow(t('textColor'), cs, 'color'),
       this.segRow(t('textBg'), cs, 'bg', [['rgba(0,0,0,.55)', t('dark')], ['rgba(255,255,255,.85)', t('light')], ['transparent', t('none')]]),
@@ -731,6 +757,151 @@ class Editor {
     const restart = () => { if (this.player.playing) { this.player.pause(); this.player.play(); } };
     if (this.media.audio.mic) el.append(h('h3', {}, t('micTrack')), this.toggleRow(t('mute'), a, 'micMute', { onchange: restart }), this.slider(t('volume'), a, 'mic', 0, 2, 0.01, { fmt: v => Math.round(v * 100) + '%', onchange: () => { clearTimeout(this._vt); this._vt = setTimeout(restart, 200); } }));
     if (this.media.audio.sys) el.append(h('h3', {}, this.p.sources.mic || this.p.cursor ? t('sysTrack') : t('originalAudio')), this.toggleRow(t('mute'), a, 'sysMute', { onchange: restart }), this.slider(t('volume'), a, 'sys', 0, 2, 0.01, { fmt: v => Math.round(v * 100) + '%', onchange: () => { clearTimeout(this._vt); this._vt = setTimeout(restart, 200); } }));
+  }
+
+
+  // ================= 素材庫（來自小柯影音剪輯助手）=================
+  panel_library(el) {
+    this._libCat ||= 'text';
+    const cats = [['text', 'lib_text'], ['sticker', 'lib_sticker'], ['effect', 'lib_effect'], ['intro', 'lib_intro'], ['outro', 'lib_outro'], ['music', 'lib_music'], ['bg', 'lib_bg']];
+    el.append(h('p', { class: 'small dim' }, t('libHelp')),
+      h('div', { class: 'seg', style: { marginBottom: '8px' } }, cats.map(([k, key]) => h('button', { class: this._libCat === k ? 'on' : '', onclick: () => { this._libCat = k; this.renderPanel(); } }, t(key)))));
+    this['lib_' + this._libCat](el);
+  }
+  libGrid(items, ratio = '16/9') {
+    return h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(96px,1fr))', gap: '8px' } }, items.map(it =>
+      h('button', { class: 'item', title: it.name, style: { flexDirection: 'column', padding: '4px', gap: '4px', alignItems: 'stretch', ...(it.on ? { borderColor: 'var(--acc)' } : {}) }, onclick: it.onclick },
+        h('div', { style: { aspectRatio: ratio, borderRadius: '6px', background: `#222 url(${it.thumb}) center/contain no-repeat` } }),
+        h('span', { class: 'small', style: { textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, it.name))));
+  }
+  thumb(key, w, hgt, draw, bg = '#1c2028') {
+    LIBTHUMBS.has(key) || LIBTHUMBS.set(key, (() => {
+      const c = document.createElement('canvas'); c.width = w; c.height = hgt; const g = c.getContext('2d');
+      if (bg) { g.fillStyle = bg; g.fillRect(0, 0, w, hgt); }
+      try { draw(g, w, hgt); } catch { }
+      return c.toDataURL('image/png');
+    })());
+    return LIBTHUMBS.get(key);
+  }
+  presetThumb(p) {
+    return this.thumb('tp_' + p.id, 192, 108, (g, w, hh) => {
+      const gr = g.createLinearGradient(0, 0, w, hh); gr.addColorStop(0, '#2b3a55'); gr.addColorStop(1, '#5a4a6a'); g.fillStyle = gr; g.fillRect(0, 0, w, hh);
+      g.textBaseline = 'middle'; g.textAlign = 'left';
+      if (p.d3) {
+        const fs = 40; g.font = `900 ${fs}px ${FONTS.sans}`;
+        const s = '3D', R = LIB.anim3D(p.d3, 2.5, fs), tw = g.measureText(s).width;
+        g.save(); g.translate(w / 2, hh / 2); g.transform(R.sx * R.scale, 0, R.skew, R.sy * R.scale, 0, 0); LIB.glyph3D(g, s, -tw / 2, 0, fs, p.d3, R.ex, R.ey, R.depthK); g.restore();
+      } else {
+        const st = PRESET_STYLE[p.id], fs = Math.min(34, st.size * 6), s = t('lib_sample');
+        g.font = `${st.bold ? 800 : 600} ${fs}px ${FONTS.sans}`; const tw = g.measureText(s).width, x = (w - tw) / 2, y = st.pos === 'top' ? hh * .25 : st.pos === 'middle' ? hh / 2 : hh * .72;
+        if (st.bg) { g.fillStyle = st.bg; roundRectPath(g, x - 8, y - fs * .7, tw + 16, fs * 1.4, 6); g.fill(); }
+        if (st.stroke) { g.lineWidth = fs * .16; g.strokeStyle = st.stroke; g.lineJoin = 'round'; g.strokeText(s, x, y); }
+        g.fillStyle = st.color; g.fillText(s, x, y);
+      }
+    });
+  }
+  applyPreset(p, target, isCaption) {
+    if (p.d3) { target.d3 = { ...p.d3 }; target.preset = p.id; if (!isCaption) { target.size = Math.max(target.size || 0, 7); target.bg = 'transparent'; target.anim = 'none'; } return; }
+    const st = PRESET_STYLE[p.id];
+    delete target.d3; target.preset = p.id;
+    if (isCaption) Object.assign(target, { color: st.color, bg: st.bg || 'transparent', pos: st.pos, size: Math.min(7, Math.max(3.4, st.size * .85)) });
+    else Object.assign(target, { color: st.color, bg: st.bg || 'transparent', stroke: st.stroke || '', bold: st.bold, size: st.size, anim: st.anim, align: 'center' });
+  }
+  lib_text(el) {
+    const sel = this.findSel(), selText = sel && this.sel.kind === 'ann' && sel.type === 'text' ? sel : null;
+    el.append(h('p', { class: 'small dim' }, selText ? t('presetForSelected') : t('presetHint')));
+    const pick = p => {
+      if (selText) this.applyPreset(p, selText, false);
+      else { const a = this.addAnnotation('text', { text: p.d3 ? t('lib_sample3d') : t('defaultText') }); if (a) this.applyPreset(p, a, false); }
+      this.change({ panel: true });
+    };
+    el.append(h('h3', {}, t('presetNormal')), this.libGrid(LIB.TEXT_PRESETS.filter(p => !p.d3).map(p => ({ name: t('tp_' + p.id), thumb: this.presetThumb(p), on: selText?.preset === p.id, onclick: () => pick(p) }))),
+      h('h3', {}, t('preset3d')), this.libGrid(LIB.TEXT_PRESETS.filter(p => p.d3).map(p => ({ name: t('tp_' + p.id), thumb: this.presetThumb(p), on: selText?.preset === p.id, onclick: () => pick(p) }))),
+      h('h3', {}, t('captionStyle')), h('p', { class: 'small dim' }, t('presetCaptionHint')),
+      this.libGrid(LIB.TEXT_PRESETS.map(p => ({ name: t('tp_' + p.id), thumb: this.presetThumb(p), on: this.p.edit.captionStyle.preset === p.id, onclick: () => { this.applyPreset(p, this.p.edit.captionStyle, true); this.p.edit.captionStyle.show = true; this.change({ panel: true, timeline: false }); toast(t('presetApplied')); } }))));
+  }
+  lib_sticker(el) {
+    el.append(this.libGrid(LIB.STK.map(([name, , size], i) => ({
+      name, thumb: this.thumb('stk' + i, 128, 128, (g, w, hh) => { const c = stickerCanvas(i); const k = Math.min(w / c.width, hh / c.height); g.drawImage(c, (w - c.width * k) / 2, (hh - c.height * k) / 2, c.width * k, c.height * k); }, size ? '#3a4152' : null),
+      onclick: () => {
+        const c = stickerCanvas(i), vw = this.p.width * this.p.edit.crop.w, vh = this.p.height * this.p.edit.crop.h;
+        if (size) this.addAnnotation('sticker', { stk: i, x: 0, y: 0, w: 1, h: 1, anim: 'fade' });   // 相框、標題條：整個畫面
+        else { const w = .18, hh = w * (c.height / c.width) * vw / vh; this.addAnnotation('sticker', { stk: i, x: .41, y: .5 - hh / 2, w, h: hh, anim: 'pop' }); }
+      },
+    })), '1/1'));
+  }
+  lib_effect(el) {
+    el.append(h('p', { class: 'small dim' }, t('effectHint')), this.libGrid(LIB.GS.map(([name, dur, fn], i) => ({
+      name, thumb: this.thumb('gs' + i, 192, 108, (g, w, hh) => fn({ g, W: w, H: hh, t: Math.min(1.4, dur / 2), D: dur })),
+      onclick: () => this.addRegion('ann', dur, { type: 'effect', gs: 'gs' + i, x: 0, y: 0, w: 1, h: 1, anim: 'none' }),
+    }))));
+  }
+  lib_intro(el) { this.libTemplates(el, 'intro'); }
+  lib_outro(el) { this.libTemplates(el, 'outro'); }
+  libTemplates(el, kind) {
+    const e = this.p.edit, cur = e[kind];
+    if (cur) {
+      const tpl = LIB.TPL[cur.id];
+      el.append(h('h3', {}, t(kind === 'intro' ? 'lib_intro' : 'lib_outro') + '：' + (tpl?.name || '')),
+        h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('introTitle')), h('input', { type: 'text', value: cur.title, oninput: ev => { cur.title = ev.target.value; this.player.invalidate(); this.scheduleSave(); } })),
+        h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('introSub')), h('textarea', { value: cur.sub, rows: 2, oninput: ev => { cur.sub = ev.target.value; this.player.invalidate(); this.scheduleSave(); } })),
+        this.slider(t('duration'), cur, 'dur', 2, 12, 0.5, { fmt: v => v + 's', structural: true, timeline: true }),
+        this.colorRow(t('accentColor'), cur, 'accent'),
+        h('div', { class: 'row wrap' },
+          h('button', { class: 'btn pri', onclick: async () => { await this.player.seekOut(kind === 'intro' ? 0 : this.player.tl.introD + this.player.tl.recOut); this.player.play(); } }, ic('play'), t('previewIt')),
+          h('button', { class: 'btn danger', onclick: () => { e[kind] = null; this.change({ structural: true, panel: true }); } }, ic('trash'), t('removeIt'))));
+    } else el.append(h('p', { class: 'small dim' }, t(kind === 'intro' ? 'introNone' : 'outroNone')));
+    const ids = Object.keys(LIB.TPL).filter(k => k.startsWith(kind));
+    el.append(h('h3', {}, t('chooseTemplate')), this.libGrid(ids.map(id => ({
+      name: LIB.TPL[id].name, on: cur?.id === id,
+      thumb: this.thumb('tpl_' + id, 192, 108, (g, w, hh) => LIB.drawTemplate(g, w, hh, LIB.TPL[id].anim === 'roll' ? 3.2 : 2.6, LIB.TPL[id].dur, LIB.TPL[id], null), null),
+      onclick: async () => {
+        const tp = LIB.TPL[id];
+        e[kind] = { id, dur: tp.dur, title: cur?.title ?? tp.title, sub: cur?.sub ?? tp.sub, accent: tp.acc };
+        this.change({ structural: true, panel: true });
+        await this.player.seekOut(kind === 'intro' ? 0 : this.player.tl.introD + this.player.tl.recOut);
+      },
+    }))));
+  }
+  lib_music(el) {
+    const e = this.p.edit, m = e.music;
+    if (m) {
+      const info = musicInfo(m.id);
+      el.append(h('h3', {}, t('lib_music') + '：' + (info?.name || '')),
+        h('div', { class: 'small dim' }, musicReady(m.id) && this.player.musicBuf ? '' : t('musicRendering')),
+        this.slider(t('volume'), m, 'volume', 0, 1.5, 0.01, { fmt: v => Math.round(v * 100) + '%', onchange: () => { clearTimeout(this._mt); this._mt = setTimeout(() => { if (this.player.playing) { this.player.pause(); this.player.play(); } }, 250); } }),
+        this.slider(t('fadeIn'), m, 'fadeIn', 0, 6, 0.1, { fmt: v => v + 's' }),
+        this.slider(t('fadeOut'), m, 'fadeOut', 0, 8, 0.1, { fmt: v => v + 's' }),
+        h('button', { class: 'btn danger', onclick: () => { e.music = null; this.stopMusicPreview(); this.change({ structural: true, panel: true }); } }, ic('trash'), t('removeIt')));
+    } else el.append(h('p', { class: 'small dim' }, t('musicNone')));
+    this._musicCat ||= 'happy';
+    el.append(h('h3', {}, t('chooseMusic')), h('div', { class: 'seg', style: { marginBottom: '6px' } }, LIB.MUSIC_CATS.map(([k]) => h('button', { class: this._musicCat === k ? 'on' : '', onclick: () => { this._musicCat = k; this.renderPanel(); } }, t('music_' + k)))));
+    el.append(h('div', { class: 'list' }, LIB.MUSIC_LIST.filter(x => x.cat === this._musicCat).map(x => h('div', { class: 'item' + (m?.id === x.id ? ' on' : '') },
+      h('button', { class: 'btn icon sm ghost', title: t('previewIt'), onclick: ev => this.previewMusic(x.id, ev.currentTarget) }, this._pvId === x.id ? '■' : '▶'),
+      h('span', { class: 'grow' }, '♪ ' + x.name), h('span', { class: 't' }, fmtTime(x.dur, false)),
+      h('button', { class: 'btn sm', onclick: () => { e.music = { id: x.id, volume: m?.volume ?? 0.35, fadeIn: m?.fadeIn ?? 1, fadeOut: m?.fadeOut ?? 2 }; this.stopMusicPreview(); this.change({ structural: true, panel: true }); toast(t('musicRendering')); getMusicBuffer(x.id).then(() => this.tab === 'library' && this.renderPanel()); } }, t('musicUse'))))));
+  }
+  async previewMusic(id, btn) {
+    if (this._pvId === id) { this.stopMusicPreview(); this.renderPanel(); return; }
+    this.stopMusicPreview();
+    this._pvId = id; btn.textContent = '…';
+    try {
+      const buf = await getMusicBuffer(id);
+      if (this._pvId !== id) return;
+      this._pvCtx = new AudioContext();
+      const s = this._pvCtx.createBufferSource(); s.buffer = buf; s.connect(this._pvCtx.destination); s.start();
+      s.onended = () => { if (this._pvId === id) { this.stopMusicPreview(); this.renderPanel(); } };
+      this.renderPanel();
+    } catch (err) { this._pvId = null; toast(String(err.message || err), true); }
+  }
+  stopMusicPreview() { this._pvId = null; try { this._pvCtx?.close(); } catch { } this._pvCtx = null; }
+  lib_bg(el) {
+    const bg = this.p.edit.background;
+    el.append(h('p', { class: 'small dim' }, t('animatedBgHint')), this.libGrid(Object.keys(LIB.BASIC).map(k => ({
+      name: t('bg_' + k), on: bg.type === 'animated' && bg.animated === k,
+      thumb: this.thumb('bg_' + k, 192, 108, (g, w, hh) => LIB.BASIC[k]({ g, W: w, H: hh, t: 1.3, D: 5, acc: '#f0a83a', tw: 0, ty: hh / 2, ts: 0 }), null),
+      onclick: () => { bg.type = 'animated'; bg.animated = k; this.change({ panel: true, timeline: false }); },
+    }))));
   }
 
   // ---------- 其他選單 ----------

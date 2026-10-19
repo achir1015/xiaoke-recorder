@@ -286,5 +286,5 @@ function assignLanes(list) {
   return lanes;
 }
 function annLabel(a) {
-  return { text: 'T ' + (a.text || ''), arrow: '➚ ' + t('ann_arrow'), rect: '▭ ' + t('ann_rect'), blur: '◌ ' + t('ann_blur'), image: '🖼 ' + t('ann_image') }[a.type];
+  return { text: (a.d3 ? '3D ' : 'T ') + (a.text || ''), arrow: '➚ ' + t('ann_arrow'), rect: '▭ ' + t('ann_rect'), blur: '◌ ' + t('ann_blur'), image: '🖼 ' + t('ann_image'), sticker: '★ ' + t('ann_sticker'), effect: '✦ ' + t('ann_effect') }[a.type] || a.type;
 }

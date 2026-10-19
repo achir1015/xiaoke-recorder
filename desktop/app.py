@@ -37,7 +37,7 @@ from pathlib import Path
 APP_NAME = "小柯機器人螢幕錄製工具"
 APP_ID = "XiaokeRecorder"
 GITHUB_REPO = "achir1015/xiaoke-recorder"
-HTTP_PORT = 48127  # 固定埠號：瀏覽器儲存的專案（IndexedDB）綁在這個網址上，每次開啟都還在
+HTTP_PORT = int(os.environ.get("XKR_PORT") or 48127)  # 固定埠號：瀏覽器儲存的專案（IndexedDB）綁在這個網址上，每次開啟都還在
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
@@ -119,14 +119,57 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def do_GET(self):
+        # 單一執行個體：第二次開啟 App 時，用這兩個網址確認並叫出已經開著的視窗
+        if self.path == "/__xkr_ping":
+            return self._reply(APP_ID)
+        if self.path == "/__xkr_show":
+            cb = LocalServer.on_show
+            if cb:
+                threading.Thread(target=cb, daemon=True).start()
+            return self._reply("ok")
+        return super().do_GET()
+
+    def _reply(self, text):
+        b = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+
+class ExclusiveServer(http.server.ThreadingHTTPServer):
+    # Python 預設 allow_reuse_address=True：在 Windows 上會讓第二個程式綁到同一個埠，請求被舊程式接走
+    allow_reuse_address = False
+
+    def server_bind(self):
+        import socket
+        if IS_WIN and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
 
 class LocalServer:
+    on_show = None   # 另一個執行個體要求顯示視窗時呼叫
+
+    @staticmethod
+    def existing_instance() -> bool:
+        """固定埠號上已經有小柯在跑？有的話請它把視窗叫出來。"""
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/__xkr_ping", timeout=1.5) as r:
+                if r.read().decode("utf-8", "replace").strip() != APP_ID:
+                    return False
+            urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/__xkr_show", timeout=1.5).read()
+            return True
+        except Exception:
+            return False
+
     def __init__(self):
         self.port = HTTP_PORT
-        socketserver.TCPServer.allow_reuse_address = False
         for port in (HTTP_PORT, HTTP_PORT + 1, HTTP_PORT + 2, 0):
             try:
-                self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+                self.httpd = ExclusiveServer(("127.0.0.1", port), Handler)
                 self.port = self.httpd.server_address[1]
                 break
             except OSError:
@@ -757,9 +800,24 @@ class SelfTest:
       await step('自動縮放（游標）', async () => { await E.autoZoom(); return E.p.edit.zooms.length + ' 段'; });
       await step('註解與字幕', async () => { E.player.seek(0.5); E.addAnnotation('text'); E.addAnnotation('arrow'); E.addAnnotation('blur'); E.p.edit.captions = [{ id: 'c', start: 0.2, end: 2, text: '自我測試字幕' }]; E.change({ panel: true }); return E.p.edit.annotations.length; });
       await step('剪掉與變速', async () => { E.player.seek(2.5); E.addRegion('trim', 0.5); E.player.seek(1); E.addRegion('speed', 0.5, { rate: 2 }); return E.player.outDur.toFixed(2) + ' 秒'; });
+      await step('素材庫（片頭、片尾、配樂、貼圖、特效、3D 字幕）', async () => {
+        const LIB = await import(location.origin + '/js/library.js');
+        const ed = E.p.edit;
+        ed.intro = { id: 'intro4', dur: 2, title: '自我測試', sub: '片頭', accent: '#f3c75f' };
+        ed.outro = { id: 'outro0', dur: 2, title: '感謝觀看', sub: '', accent: '#f0a83a' };
+        ed.music = { id: 'mu_happy3', volume: .3, fadeIn: .5, fadeOut: 1 };
+        ed.background.type = 'animated'; ed.background.animated = 'bokeh';
+        E.player.seek(.3); E.addAnnotation('sticker', { stk: 5, x: .1, y: .1, w: .15, h: .27 });
+        E.addRegion('ann', 1.5, { type: 'effect', gs: 'gs2', x: 0, y: 0, w: 1, h: 1 });
+        E.applyPreset(LIB.TEXT_PRESETS.find(p => p.id === 'td3'), ed.captionStyle, true);
+        E.change({ structural: true, panel: true });
+        const counts = `片頭${Object.keys(LIB.TPL).filter(k => k.startsWith('intro')).length} 片尾${Object.keys(LIB.TPL).filter(k => k.startsWith('outro')).length} 貼圖${LIB.STK.length} 特效${LIB.GS.length} 配樂${LIB.MUSIC_LIST.length} 樣式${LIB.TEXT_PRESETS.length}`;
+        if (LIB.MUSIC_LIST.length !== 110 || LIB.STK.length !== 30 || LIB.GS.length !== 20 || LIB.TEXT_PRESETS.length !== 12) throw new Error(counts);
+        return counts + '，總長 ' + E.player.outDur.toFixed(2) + ' 秒';
+      });
       const { exportVideo, exportMp3 } = await import(location.origin + '/js/exporter.js');
       const { desktopSave } = await import(location.origin + '/js/desktop.js');
-      await step('匯出 MP4 並存檔', async () => { const res = await exportVideo(E.p, E.media, E.assets, { format: 'mp4', height: 720, fps: 30, quality: 'medium' }, () => { }); const p = await desktopSave('selftest-export.mp4', res.blob); r.mp4 = { path: p, size: res.blob.size }; return res.W + 'x' + res.H + ' ' + res.blob.size; });
+      await step('匯出 MP4 並存檔', async () => { const res = await exportVideo(E.p, E.media, E.assets, { format: 'mp4', height: 720, fps: 30, quality: 'medium' }, () => { }); if (Math.abs(res.dur - E.player.outDur) > .05) throw new Error('長度不符 ' + res.dur); const p = await desktopSave('selftest-export.mp4', res.blob); r.mp4 = { path: p, size: res.blob.size }; return res.W + 'x' + res.H + ' ' + res.dur.toFixed(2) + 's ' + res.blob.size; });
       await step('匯出 MP3 並存檔', async () => { const res = await exportMp3(E.p, E.media, () => { }); const p = await desktopSave('selftest-audio.mp3', res.blob); r.mp3 = { path: p, size: res.blob.size }; return res.blob.size; });
       await step('網頁版本號', async () => (await import(location.origin + '/js/updater.js')).APP_VERSION);
       r.ok = r.steps.every(s => s.ok);
@@ -847,6 +905,10 @@ class SelfTest:
                 if br._rec.state == "countdown":
                     break
             log("熱鍵開始→倒數", br._rec.state in ("countdown", "recording"), br._rec.state)
+            for _ in range(20):                           # 迷你控制列在倒數開始後才建立
+                if br._rec.mini is not None and (IS_MAC or br._rec.tray is not None):
+                    break
+                time.sleep(0.2)
             log("迷你控制列出現", br._rec.mini is not None, getattr(br._rec, "mini_error", ""))
             if not IS_MAC:
                 log("系統列圖示出現", br._rec.tray is not None)
@@ -993,11 +1055,25 @@ def main():
         os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--autoplay-policy=no-user-gesture-required --enable-features=WebCodecs")
     import webview
 
+    if not selftest and LocalServer.existing_instance():
+        return   # 小柯已經開著：已請它把視窗叫到最前面
     server = LocalServer()
     bridge = DesktopBridge(server)
     window = webview.create_window(APP_NAME, url=server.url, js_api=bridge, width=1440, height=900, min_size=(1000, 640),
                                    background_color="#0f1115", maximized=selftest is None)
     bridge.attach(window)
+
+    def show_window():
+        try:
+            window.restore()
+            window.show()
+            window.on_top = True
+            time.sleep(0.3)
+            window.on_top = False
+        except Exception:
+            pass
+
+    LocalServer.on_show = show_window
     try:
         webview.settings["ALLOW_DOWNLOADS"] = True
     except Exception:
