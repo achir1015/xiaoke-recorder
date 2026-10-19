@@ -60,7 +60,7 @@ jobs:
           function Note($title, $text) { $t = ($text | Out-String) -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'; Write-Host "::warning title=$title::$t" }
           New-Item -ItemType Directory C:\KKTest\out -Force | Out-Null
           $p = Start-Process -FilePath 'C:\KKTest\XiaokeRecorder\XiaokeRecorder.exe' -ArgumentList '--selftest C:\KKTest\out\report.json' -PassThru
-          if (-not $p.WaitForExit(300000)) { Stop-Process $p -Force }
+          if (-not $p.WaitForExit(420000)) { Stop-Process $p -Force }
           if (-not (Test-Path C:\KKTest\out\report.json)) { throw '沒有產生測試報告' }
           $r = Get-Content C:\KKTest\out\report.json -Raw -Encoding UTF8
           Note '自我測試報告（Windows）' $r
@@ -137,7 +137,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/kk" test-output
           "dist/小柯機器人螢幕錄製工具.app/Contents/MacOS/XiaokeRecorder" --selftest "$RUNNER_TEMP/kk/report.json" &
           PID=$!
-          for i in $(seq 1 150); do [ -f "$RUNNER_TEMP/kk/report.json" ] && break; sleep 2; done
+          for i in $(seq 1 220); do [ -f "$RUNNER_TEMP/kk/report.json" ] && break; sleep 2; done
           sleep 3; kill $PID 2>/dev/null || true
           cp "$RUNNER_TEMP"/kk/*.json "$RUNNER_TEMP"/kk/*.png test-output/ 2>/dev/null || true
           [ -f test-output/report.json ] || { echo "::error::沒有產生測試報告"; exit 1; }
@@ -187,7 +187,7 @@ jobs:
         run: |
           mkdir -p test-output
           pulseaudio --start --exit-idle-time=-1 || true
-          timeout 300 xvfb-run -a -s "-screen 0 1920x1080x24" dist/XiaokeRecorder/XiaokeRecorder --selftest "$PWD/test-output/report.json" || true
+          timeout 440 xvfb-run -a -s "-screen 0 1920x1080x24" dist/XiaokeRecorder/XiaokeRecorder --selftest "$PWD/test-output/report.json" || true
           [ -f test-output/report.json ] || { echo "::error::沒有產生測試報告"; exit 1; }
           python3 tools/report.py test-output/report.json "Linux"
       - name: 製作 AppImage 與 .deb

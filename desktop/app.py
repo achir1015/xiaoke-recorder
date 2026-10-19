@@ -283,7 +283,7 @@ class RecControl:
         px, py = int(x + w - self.W - 16), int(y + h - self.H - 16)
         self.mini = webview.create_window("小柯錄影中", url=self.bridge._server.url + "mini.html", js_api=self.bridge,
                                           width=self.W, height=self.H, x=px, y=py, resizable=False, frameless=True,
-                                          easy_drag=True, on_top=True, background_color="#171a21", focus=False)
+                                          easy_drag=IS_WIN, on_top=True, background_color="#171a21", focus=False)  # Qt 版 pywebview 的 easy_drag 有錯誤
         if IS_WIN:
             threading.Thread(target=self._place_win, daemon=True).start()
 
@@ -793,7 +793,11 @@ class SelfTest:
             report["mp3_file_ok"] = mp3.is_file() and mp3.stat().st_size > 1000
             report["version_match"] = self.window.evaluate_js("document.title !== '' ") is not False
             # 完整錄影流程：熱鍵開始 → 主視窗縮小＋迷你控制列 → 計時累積 → 熱鍵暫停／繼續 → 熱鍵停止 → 進入剪輯
-            report["flow"] = self.flow_test()
+            box = {}
+            th = threading.Thread(target=lambda: box.setdefault("r", self.flow_test()), daemon=True)
+            th.start()
+            th.join(timeout=90)
+            report["flow"] = box.get("r") or {"ok": False, "steps": [], "note": "錄影流程測試逾時"}
             self.screenshot("selftest-after-flow.png")
             # 原生錄影 2 秒（雲端電腦可能沒有可錄的畫面：只記錄結果，不算失敗）
             report["native"] = self.native_test()
