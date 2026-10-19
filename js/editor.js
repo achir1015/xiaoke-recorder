@@ -8,6 +8,7 @@ import { CursorTrack, CURSOR_THEMES } from './cursor.js';
 import { WALLPAPERS, GRADIENTS, SOLIDS, ASPECTS, FONTS, outputSize, viewAt, stickerCanvas } from './compositor.js';
 import * as LIB from './library.js';
 import { getMusicBuffer, musicInfo, musicReady } from './assets.js';
+import { TRANSITIONS, transitionThumb, defaultTransition } from './transitions.js';
 import { Player } from './player.js';
 import { Timeline } from './timeline.js';
 import { exportVideo, remuxToMp4, exportMp3, audioBufferToMp3 } from './exporter.js';
@@ -490,7 +491,9 @@ class Editor {
         h('button', { class: 'btn', onclick: () => this.addRegion('speed', 3, { rate: 2 }) }, ic('speed'), t('addSpeed'))));
     const s = this.findSel();
     if (s && this.sel.kind === 'trim') {
-      el.append(h('h3', {}, t('trimSegment')), this.timeFields(s, true), h('p', { class: 'small dim' }, t('trimHelp')), this.delBtn());
+      el.append(h('h3', {}, t('trimSegment')), this.timeFields(s, true), h('p', { class: 'small dim' }, t('trimHelp')),
+        h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('transThisCut')), this.transGrid(s.trans || 'auto', k => { s.trans = k; this.change({ structural: true, panel: true }); }, true)),
+        this.delBtn());
     } else if (s && this.sel.kind === 'speed') {
       el.append(h('h3', {}, t('speedSegment')), this.timeFields(s, true),
         this.segRow(t('speed'), s, 'rate', [[0.25, '0.25×'], [0.5, '0.5×'], [0.75, '0.75×'], [1.5, '1.5×'], [2, '2×'], [3, '3×'], [4, '4×'], [8, '8×']], { structural: true }),
@@ -498,6 +501,7 @@ class Editor {
     }
     const e = this.p.edit;
     const outDur = this.player.outDur;
+    this.transitionSection(el);
     el.append(h('h3', {}, t('summary')), h('div', { class: 'small dim' }, t('summaryText', { orig: fmtTime(this.p.duration), out: fmtTime(outDur), trims: e.trims.length, speeds: e.speeds.length })));
   }
 
@@ -571,6 +575,7 @@ class Editor {
       el.append(h('h3', {}, t('zoomSegment')), this.timeFields(s, false),
         this.slider(t('zoomDepth'), s, 'depth', 1.1, 5, 0.05, { fmt: v => v.toFixed(2) + '×' }),
         this.slider(t('zoomTransition'), s, 'transition', 0.1, 2, 0.05, { fmt: v => v.toFixed(2) + 's' }),
+        (s.transitionOut ??= Math.max(1.2, s.transition ?? .6), this.slider(t('zoomOutTime'), s, 'transitionOut', 0.2, 4, 0.05, { fmt: v => v.toFixed(2) + 's' })),
         this.selectRow(t('easing'), s, 'ease', Object.keys(EASINGS).map(k => [k, t('ease_' + k)])));
       if (cur) el.append(this.toggleRow(t('followCursor'), s, 'follow', { panel: true }));
       if (!s.follow) {
@@ -579,7 +584,7 @@ class Editor {
         const yi = h('input', { type: 'number', value: px(s.y * vh), min: 0, max: Math.round(vh), onchange: ev => { s.y = clamp(+ev.target.value / vh, 0, 1); this.change({ timeline: false }); } });
         el.append(h('div', { class: 'small dim' }, t('zoomFocusHelp')), h('div', { class: 'row' }, h('div', { class: 'field grow' }, h('div', { class: 'lbl' }, 'X (px)'), xi), h('div', { class: 'field grow' }, h('div', { class: 'lbl' }, 'Y (px)'), yi)));
       }
-      el.append(h('div', { class: 'row wrap' }, h('button', { class: 'btn sm', onclick: () => { for (const z of e.zooms) { z.depth = s.depth; z.transition = s.transition; z.ease = s.ease; } this.change({}); toast(t('appliedToAll')); } }, t('applyToAllZooms')), this.delBtn()));
+      el.append(h('div', { class: 'row wrap' }, h('button', { class: 'btn sm', onclick: () => { for (const z of e.zooms) { z.depth = s.depth; z.transition = s.transition; z.transitionOut = s.transitionOut; z.ease = s.ease; } this.change({}); toast(t('appliedToAll')); } }, t('applyToAllZooms')), this.delBtn()));
     }
     if (e.zooms.length) {
       el.append(h('h3', {}, t('zoomList') + ` (${e.zooms.length})`),
@@ -763,7 +768,7 @@ class Editor {
   // ================= 素材庫（來自小柯影音剪輯助手）=================
   panel_library(el) {
     this._libCat ||= 'text';
-    const cats = [['text', 'lib_text'], ['sticker', 'lib_sticker'], ['effect', 'lib_effect'], ['intro', 'lib_intro'], ['outro', 'lib_outro'], ['music', 'lib_music'], ['bg', 'lib_bg']];
+    const cats = [['text', 'lib_text'], ['sticker', 'lib_sticker'], ['effect', 'lib_effect'], ['transition', 'transitions'], ['intro', 'lib_intro'], ['outro', 'lib_outro'], ['music', 'lib_music'], ['bg', 'lib_bg']];
     el.append(h('p', { class: 'small dim' }, t('libHelp')),
       h('div', { class: 'seg', style: { marginBottom: '8px' } }, cats.map(([k, key]) => h('button', { class: this._libCat === k ? 'on' : '', onclick: () => { this._libCat = k; this.renderPanel(); } }, t(key)))));
     this['lib_' + this._libCat](el);
@@ -836,6 +841,7 @@ class Editor {
       onclick: () => this.addRegion('ann', dur, { type: 'effect', gs: 'gs' + i, x: 0, y: 0, w: 1, h: 1, anim: 'none' }),
     }))));
   }
+  lib_transition(el) { this.transitionSection(el); }
   lib_intro(el) { this.libTemplates(el, 'intro'); }
   lib_outro(el) { this.libTemplates(el, 'outro'); }
   libTemplates(el, kind) {
@@ -847,6 +853,7 @@ class Editor {
         h('div', { class: 'field' }, h('div', { class: 'lbl' }, t('introSub')), h('textarea', { value: cur.sub, rows: 2, oninput: ev => { cur.sub = ev.target.value; this.player.invalidate(); this.scheduleSave(); } })),
         this.slider(t('duration'), cur, 'dur', 2, 12, 0.5, { fmt: v => v + 's', structural: true, timeline: true }),
         this.colorRow(t('accentColor'), cur, 'accent'),
+        h('div', { class: 'field' }, h('div', { class: 'lbl' }, t(kind === 'intro' ? 'transAtIntro' : 'transAtOutro')), this.transGrid(cur.trans || 'auto', k => { cur.trans = k; this.change({ structural: true, panel: true }); }, true)),
         h('div', { class: 'row wrap' },
           h('button', { class: 'btn pri', onclick: async () => { await this.player.seekOut(kind === 'intro' ? 0 : this.player.tl.introD + this.player.tl.recOut); this.player.play(); } }, ic('play'), t('previewIt')),
           h('button', { class: 'btn danger', onclick: () => { e[kind] = null; this.change({ structural: true, panel: true }); } }, ic('trash'), t('removeIt'))));
@@ -902,6 +909,25 @@ class Editor {
       thumb: this.thumb('bg_' + k, 192, 108, (g, w, hh) => LIB.BASIC[k]({ g, W: w, H: hh, t: 1.3, D: 5, acc: '#f0a83a', tw: 0, ty: hh / 2, ts: 0 }), null),
       onclick: () => { bg.type = 'animated'; bg.animated = k; this.change({ panel: true, timeline: false }); },
     }))));
+  }
+
+
+  // ---------- 轉場 ----------
+  transGrid(cur, onPick, withAuto = false) {
+    const items = [];
+    if (withAuto) items.push({ name: t('transFollowGlobal'), on: !cur || cur === 'auto', thumb: '', onclick: () => onPick('auto') });
+    items.push({ name: t('none'), on: cur === 'none', thumb: '', onclick: () => onPick('none') });
+    for (const k of TRANSITIONS) items.push({ name: t('trans_' + k), on: cur === k, thumb: (LIBTHUMBS.has('tr_' + k) || LIBTHUMBS.set('tr_' + k, transitionThumb(k, 160, 90)), LIBTHUMBS.get('tr_' + k)), onclick: () => onPick(k) });
+    return this.libGrid(items);
+  }
+  transitionSection(el) {
+    const tr = this.p.edit.transition ||= defaultTransition();
+    el.append(h('h3', {}, t('transitions')), h('p', { class: 'small dim' }, t('transHelp')),
+      this.transGrid(tr.type, k => { tr.type = k === 'auto' ? 'none' : k; this.change({ structural: true, panel: true }); }),
+      this.slider(t('transDur'), tr, 'dur', 0.2, 2, 0.05, { fmt: v => v.toFixed(2) + 's', structural: true }),
+      this.toggleRow(t('transAtCuts'), tr, 'cuts', { structural: true }),
+      this.toggleRow(t('transAtIntro'), tr, 'intro', { structural: true }),
+      this.toggleRow(t('transAtOutro'), tr, 'outro', { structural: true }));
   }
 
   // ---------- 其他選單 ----------

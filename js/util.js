@@ -4,8 +4,11 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 export function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
+  let value;
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
+    // value 一定要設成「屬性值」：textarea 沒有 value 這個 HTML 屬性，用 setAttribute 會變成空白
+    if (k === 'value') { value = v; continue; }
     if (k === 'class') el.className = v;
     else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
@@ -14,6 +17,7 @@ export function h(tag, attrs = {}, ...kids) {
     else el.setAttribute(k, v === true ? '' : v);
   }
   for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  if (value !== undefined) el.value = value;   // 放在子元素之後，select 的選項才已經存在
   return el;
 }
 

@@ -27,7 +27,7 @@ export function zoomFromCursor(cursor, duration, crop, opts = {}) {
     const x = g.pts.reduce((a, p) => a + p.x, 0) / g.pts.length, y = g.pts.reduce((a, p) => a + p.y, 0) / g.pts.length;
     return {
       id: uid(), start: clamp(g.start - 0.8, 0, duration), end: clamp(g.end + 1.6, 0, duration),
-      depth, x, y, follow: true, ease: 'smooth', transition: 0.7, auto: true,
+      depth, x, y, follow: true, ease: 'smooth', transition: 0.7, transitionOut: 1.2, auto: true,
     };
   }).filter(z => z.end - z.start > 1);
 }
@@ -76,7 +76,7 @@ export async function zoomFromMotion(videoTrack, duration, crop, onProgress, opt
   const toCrop = (x, y) => ({ x: clamp((x - crop.x) / crop.w, 0, 1), y: clamp((y - crop.y) / crop.h, 0, 1) });
   return groups.filter(g => g.n >= 3 && g.end - g.start >= 0.75).map(g => {
     const p = toCrop(g.x, g.y);
-    return { id: uid(), start: clamp(g.start - 0.6, 0, duration), end: clamp(g.end + 1.2, 0, duration), depth, x: p.x, y: p.y, follow: false, ease: 'smooth', transition: 0.7, auto: true };
+    return { id: uid(), start: clamp(g.start - 0.6, 0, duration), end: clamp(g.end + 1.2, 0, duration), depth, x: p.x, y: p.y, follow: false, ease: 'smooth', transition: 0.7, transitionOut: 1.2, auto: true };
   });
 }
 

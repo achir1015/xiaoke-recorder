@@ -95,7 +95,7 @@ export class Timeline {
           for (const c of this.thumbs) { c.style.width = tw + 'px'; c.style.objectFit = 'cover'; th.append(c); }
           row.append(th);
         }
-        for (const g of ed.trims) row.append(this.region(g, 'trim', '✂ ' + t('cut')));
+        for (const g of ed.trims) row.append(this.region(g, 'trim', '✂ ' + t('cut') + ((g.trans && g.trans !== 'auto' && g.trans !== 'none') || (!g.trans || g.trans === 'auto') && ed.transition?.type && ed.transition.type !== 'none' && ed.transition.cuts ? ' ⇄' : '')));
       } else if (r.key === 'zoom') {
         for (const z of ed.zooms) row.append(this.region(z, 'zoom', `${z.depth.toFixed(1)}×${z.follow ? ' ↝' : ''}`, z.auto ? 'auto' : ''));
       } else if (r.key === 'speed') {

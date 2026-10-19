@@ -148,7 +148,10 @@ function zoomTarget(zm, t, cursor, crop) {
   }
   return { z: zm.depth, cx, cy };
 }
-function lerpView(a, b, u) { return { z: lerp(a.z, b.z, u), cx: lerp(a.cx, b.cx, u), cy: lerp(a.cy, b.cy, u) }; }
+// 倍率用對數內插：放大、縮小的速度在視覺上均勻，不會在快恢復時突然一縮
+function lerpView(a, b, u) { return { z: Math.exp(lerp(Math.log(a.z), Math.log(b.z), u)), cx: lerp(a.cx, b.cx, u), cy: lerp(a.cy, b.cy, u) }; }
+// 恢復正常（縮回原尺寸）用更柔和的曲線：開始和結束都很慢，整個過程漸漸恢復
+const gentle = u => { u = clamp(u, 0, 1); return u * u * u * (u * (u * 6 - 15) + 10); };
 
 export function viewAt(edit, t, cursor) {
   const zs = edit.zooms;
@@ -156,14 +159,16 @@ export function viewAt(edit, t, cursor) {
   const i = zs.findIndex(z => t >= z.start && t < z.end);
   let v = IDENT;
   if (i >= 0) {
-    const R = zs[i], T = Math.max(0.05, R.transition ?? 0.6);
+    const R = zs[i];
+    const Tin = Math.max(0.05, R.transition ?? 0.6);                       // 放大時間
+    const Tout = Math.max(0.05, R.transitionOut ?? Math.max(1.2, Tin));    // 恢復時間（預設比放大慢）
     const target = zoomTarget(R, t, cursor, edit.crop);
     const prev = zs.find(z => z !== R && z.end <= R.start + 1e-3 && z.end > R.start - 0.08);
     const next = zs.find(z => z !== R && z.start >= R.end - 1e-3 && z.start < R.end + 0.08);
-    const pin = (t - R.start) / T, pout = (R.end - t) / T;
-    if (prev && pin < 1) v = lerpView(zoomTarget(prev, prev.end - 1e-3, cursor, edit.crop), target, ease(R.ease, pin));
-    else if (!next && pout < 1) v = lerpView(IDENT, target, ease(R.ease, Math.min(pout, pin)));
-    else v = lerpView(IDENT, target, ease(R.ease, Math.min(pin, 1)));
+    const pin = (t - R.start) / Tin, pout = (R.end - t) / Tout;
+    const kin = ease(R.ease, Math.min(pin, 1)), kout = next ? 1 : gentle(Math.min(pout, 1));
+    if (prev && pin < 1) v = lerpView(zoomTarget(prev, prev.end - 1e-3, cursor, edit.crop), target, kin);
+    else v = lerpView(IDENT, target, Math.min(kin, kout));
   }
   return v;
 }

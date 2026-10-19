@@ -4,6 +4,8 @@ import { buildTimeline, partAt, srcToOut } from './project.js';
 import { render, outputSize, renderTemplate } from './compositor.js';
 import { scheduleAudio } from './exporter.js';
 import { getMusicBuffer, scheduleMusic } from './assets.js';
+import { transitionPoints, transitionAt, drawTransition } from './transitions.js';
+import { VideoSampleSink } from '../vendor/mediabunny.min.mjs';
 
 export class Player extends Emitter {
   constructor(project, media, canvas, assets) {
@@ -32,6 +34,7 @@ export class Player extends Emitter {
     this.tl = buildTimeline(this.project.edit, this.project.duration);
     this.segs = this.tl.segs;
     this.outDur = this.tl.total;
+    this.tpts = transitionPoints(this.project.edit, this.tl);
     this.o = Math.min(this.o, this.outDur);
     this.loadMusic();
   }
@@ -154,6 +157,8 @@ export class Player extends Emitter {
     if (!this._dirty) return;
     this._dirty = false;
     const pt = this.part, ed = this.project.edit;
+    const tr = transitionAt(this.tpts, this.o);
+    if (tr) { this._drawTransition(tr, pw, ph); return; }
     if (pt.kind !== 'rec') {
       // 片頭／片尾
       renderTemplate(this.ctx, pw, ph, pt.kind === 'intro' ? ed.intro : ed.outro, pt.lt);
@@ -172,11 +177,56 @@ export class Player extends Emitter {
     this.emit('drawn', this.layout);
   }
 
+  // 轉場：A（接點前）與 B（接點後）各畫一張，再依效果混合
+  _drawTransition(tr, pw, ph) {
+    const ed = this.project.edit, live = this.part;
+    const A = partAt(this.tl, Math.min(this.o, tr.T - 1e-3)), B = partAt(this.tl, Math.max(this.o, tr.T + 1e-3));
+    this._la = layerCanvas(this._la, pw, ph); this._lb = layerCanvas(this._lb, pw, ph);
+    const draw = (cv, part) => {
+      const g = cv.getContext('2d');
+      if (part.kind !== 'rec') { renderTemplate(g, pw, ph, part.kind === 'intro' ? ed.intro : ed.outro, part.lt); return; }
+      const isLive = live.kind === 'rec' && Math.abs(part.src - live.src) < 1e-3;
+      const fr = {};
+      for (const [k, r] of Object.entries(this.readers)) fr[k] = !r ? null : isLive ? (this.playing ? r.update(this.t) : r.cur) : this._frozen(k, part.src);
+      render(g, pw, ph, part.src, { project: this.project, screen: fr.screen, camera: fr.camera, cursor: this.assets.cursor, images: this.assets.images, bgImage: this.assets.bgImage, preview: false, ot: this.o });
+    };
+    draw(this._la, A); draw(this._lb, B);
+    drawTransition(this.ctx, this._la, this._lb, tr.type, tr.p, pw, ph);
+    this.layout = null;
+    this.emit('drawn', null);
+  }
+  // 轉場時「停住」的那一格（接點前最後一格／接點後第一格）：隨機讀取並快取
+  _frozen(name, src) {
+    this._fz ||= new Map();
+    const key = name + ':' + src.toFixed(3);
+    const hit = this._fz.get(key);
+    if (hit && hit !== 'loading') return hit;
+    if (!hit && this.media.video[name]) {
+      this._fz.set(key, 'loading');
+      this._fzSink ||= {};
+      this._fzSink[name] ||= new VideoSampleSink(this.media.video[name]);
+      this._fzSink[name].getSample(src).then(s => {
+        if (!s) { this._fz.delete(key); return; }
+        this._fz.set(key, s);
+        if (this._fz.size > 12) { const [k0, v0] = this._fz.entries().next().value; if (v0 !== 'loading') v0.close?.(); this._fz.delete(k0); }
+        this._dirty = true;
+      }).catch(() => this._fz.delete(key));
+    }
+    return null;
+  }
+
   // 等目前畫面解碼好再畫（播放時解碼器會稍慢於時鐘）
   dispose() {
     cancelAnimationFrame(this._raf);
     this.pause();
     Object.values(this.readers).forEach(r => r?.dispose());
+    for (const v of this._fz?.values() || []) if (v !== 'loading') v.close?.();
     this.actx?.close().catch(() => { });
   }
+}
+
+function layerCanvas(c, w, h) {
+  if (!c) c = document.createElement('canvas');
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return c;
 }

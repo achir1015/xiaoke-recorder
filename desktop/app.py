@@ -770,7 +770,7 @@ class SelfTest:
     JS_TEST = r"""
     (async function () {
       const r = { steps: [] };
-      const step = async (name, fn) => { try { const v = await fn(); r.steps.push({ name, ok: true, info: String(v ?? '') }); } catch (e) { r.steps.push({ name, ok: false, info: String(e && (e.stack || e.message) || e).slice(0, 400) }); } };
+      const step = async (name, fn) => { window.__kkProgress = '進行中：' + name; try { const v = await fn(); r.steps.push({ name, ok: true, info: String(v ?? '') }); } catch (e) { r.steps.push({ name, ok: false, info: String(e && (e.stack || e.message) || e).slice(0, 400) }); } window.__kkProgress = r.steps.map(s => (s.ok ? '✔' : '✘') + s.name).join(' / '); };
       const mb = await import(location.origin + '/vendor/mediabunny.min.mjs');
       let blob;
       await step('產生測試錄影', async () => {
@@ -810,6 +810,8 @@ class SelfTest:
         E.player.seek(.3); E.addAnnotation('sticker', { stk: 5, x: .1, y: .1, w: .15, h: .27 });
         E.addRegion('ann', 1.5, { type: 'effect', gs: 'gs2', x: 0, y: 0, w: 1, h: 1 });
         E.applyPreset(LIB.TEXT_PRESETS.find(p => p.id === 'td3'), ed.captionStyle, true);
+        ed.transition = { type: 'iris', dur: .6, cuts: true, intro: true, outro: true };
+        if (ed.trims[0]) ed.trims[0].trans = 'pushLeft';
         E.change({ structural: true, panel: true });
         const counts = `片頭${Object.keys(LIB.TPL).filter(k => k.startsWith('intro')).length} 片尾${Object.keys(LIB.TPL).filter(k => k.startsWith('outro')).length} 貼圖${LIB.STK.length} 特效${LIB.GS.length} 配樂${LIB.MUSIC_LIST.length} 樣式${LIB.TEXT_PRESETS.length}`;
         if (LIB.MUSIC_LIST.length !== 110 || LIB.STK.length !== 30 || LIB.GS.length !== 20 || LIB.TEXT_PRESETS.length !== 12) throw new Error(counts);
@@ -842,11 +844,16 @@ class SelfTest:
             time.sleep(1.5)
             self.window.evaluate_js(self.JS_TEST)
             res = None
+            last = None
             for _ in range(480):
                 time.sleep(0.5)
                 res = self.window.evaluate_js("window.__kkTest ? JSON.stringify(window.__kkTest) : null")
                 if res:
                     break
+                prog = self.window.evaluate_js("window.__kkProgress || ''")
+                if prog and prog != last:
+                    print("[selftest]", prog, flush=True)
+                    last = prog
             report["web"] = json.loads(res) if res else {"ok": False, "note": "網頁沒有回傳測試結果"}
             self.screenshot("selftest-editor.png")
             mp4 = Path((report["web"].get("mp4") or {}).get("path") or "")

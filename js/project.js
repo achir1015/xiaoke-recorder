@@ -1,6 +1,7 @@
 // 專案資料模型與本機儲存（IndexedDB）
 // 一個專案 = 錄到的媒體檔（Blob）＋ 編輯設定（JSON）。所有時間都以「原始錄影的秒數」記錄。
 import { uid } from './util.js';
+import { defaultTransition } from './transitions.js';
 
 export const PROJECT_FORMAT = 1;
 
@@ -23,6 +24,7 @@ export function defaultEdit() {
     intro: null,        // 片頭 {id:'intro3', dur, title, sub, accent}
     outro: null,        // 片尾 {id:'outro0', dur, title, sub, accent}
     music: null,        // 背景配樂 {id:'mu_happy0', volume, fadeIn, fadeOut}
+    transition: defaultTransition(),   // 轉場（剪掉接點、片頭、片尾）
   };
 }
 

@@ -7,6 +7,7 @@ import { GIFEncoder, quantize, applyPalette } from '../vendor/gifenc.esm.js';
 import { buildSegments, outputDuration, outToSrc, buildTimeline, partAt } from './project.js';
 import { render, outputSize, renderTemplate } from './compositor.js';
 import { getMusicBuffer, scheduleMusic } from './assets.js';
+import { transitionPoints, transitionAt, drawTransition } from './transitions.js';
 
 // 把一個 AudioBuffer 依照剪輯片段排進 AudioContext（預覽與匯出共用）
 export function scheduleAudio(ctx, dest, buffer, gain, segs, fromOut = 0, when = 0) {
@@ -78,12 +79,36 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
   }
   const st = { project, cursor: assets.cursor, images: assets.images, bgImage: assets.bgImage, preview: false };
   const ed = project.edit;
+  const tpts = transitionPoints(ed, tl);
+  const LA = new OffscreenCanvas(W, H), LB = new OffscreenCanvas(W, H);
+  // 轉場時停住的畫面（接點前最後一格、接點後第一格）用隨機讀取，和連續解碼分開
+  const fzSinks = {}, fzCache = new Map();
+  const frozen = async (name, src) => {
+    if (!media.video[name] || (name === 'camera' && !ed.camera.show)) return null;
+    const key = name + ':' + src.toFixed(3);
+    if (!fzCache.has(key)) {
+      fzSinks[name] ||= new VideoSampleSink(media.video[name]);
+      fzCache.set(key, await fzSinks[name].getSample(src));
+      if (fzCache.size > 8) { const [k0, v0] = fzCache.entries().next().value; v0?.close(); fzCache.delete(k0); }
+    }
+    return fzCache.get(key);
+  };
   // 畫第 i 格：片頭／片尾用範本，錄影用合成器
+  const drawPart = async (g, p, live, o) => {
+    if (p.kind !== 'rec') { renderTemplate(g, W, H, p.kind === 'intro' ? ed.intro : ed.outro, p.lt); return; }
+    const scr = live ? cur.screen : await frozen('screen', p.src), cam = live ? cur.camera : await frozen('camera', p.src);
+    render(g, W, H, p.src, { ...st, screen: scr, camera: cam, ot: o });
+  };
   const frame = async i => {
-    const p = parts[i];
-    if (p.kind !== 'rec') { renderTemplate(ctx, W, H, p.kind === 'intro' ? ed.intro : ed.outro, p.lt); return; }
-    await nextFrames();
-    render(ctx, W, H, p.src, { ...st, screen: cur.screen, camera: cur.camera, ot: i / fps });
+    const p = parts[i], o = i / fps;
+    if (p.kind === 'rec') await nextFrames();   // 連續解碼的影片一定要往前推進一格
+    const tr = transitionAt(tpts, o);
+    if (!tr) { await drawPart(ctx, p, true, o); return; }
+    const A = partAt(tl, Math.min(o, tr.T - 1e-3)), B = partAt(tl, Math.max(o, tr.T + 1e-3));
+    const liveA = p.kind === 'rec' && A.kind === 'rec' && Math.abs(A.src - p.src) < 1e-3, liveB = p.kind === 'rec' && B.kind === 'rec' && Math.abs(B.src - p.src) < 1e-3;
+    await drawPart(LA.getContext('2d'), A, liveA, o);
+    await drawPart(LB.getContext('2d'), B, liveB, o);
+    drawTransition(ctx, LA, LB, tr.type, tr.p, W, H);
   };
   const cur = {};
   const nextFrames = async () => {
@@ -93,6 +118,7 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     }
   };
   const cleanup = () => { for (const it of Object.values(iters)) it.return?.(); for (const s of Object.values(cur)) s?.close(); };
+  const cleanupFz = () => { for (const s of fzCache?.values?.() || []) s?.close(); };
 
   try {
     if (opts.format === 'gif') {
@@ -138,7 +164,7 @@ export async function exportVideo(project, media, assets, opts, onProgress, sign
     vsrc.close();
     await output.finalize();
     return { blob: new Blob([output.target.buffer], { type: 'video/mp4' }), ext: 'mp4', W, H, dur, codec: vcodec };
-  } finally { cleanup(); }
+  } finally { cleanup(); cleanupFz(); }
 }
 
 // ---- MP3：聲音檔一律用 MP3（瀏覽器不能直接編 MP3，用 LAME 編碼器的 WebAssembly 版本）----
